@@ -1,448 +1,308 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-
-import sys
 import os
 import time
 import json
-import argparse
-import threading
-from concurrent.futures import ThreadPoolExecutor
+import random
+import re
+import socket
+import ssl
+import struct
+import urllib.parse
 from fastapi import FastAPI, Query
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-if HERE not in sys.path:
-    sys.path.insert(0, HERE)
+HOST = "delta-solve.app.workbuddy.host"
+H2_PREFACE = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
+FRAME_DATA = 0x0
+FRAME_HEADERS = 0x1
+FRAME_RST = 0x3
+FRAME_SETTINGS = 0x4
+FRAME_PING = 0x6
+FRAME_GOAWAY = 0x7
+FRAME_WINDOW = 0x8
+FRAME_CONT = 0x9
+FLAG_END_STREAM = 0x1
+FLAG_ACK = 0x1
+FLAG_END_HEADERS = 0x4
 
-import auth_client as AUTH
-import link_generator as LG
+HUFF = [(0x1ff8,13),(0x7fffd8,23),(0xfffffe2,28),(0xfffffe3,28),(0xfffffe4,28),(0xfffffe5,28),(0xfffffe6,28),(0xfffffe7,28),(0xfffffe8,28),(0xffffea,24),(0x3ffffffc,30),(0xfffffe9,28),(0xfffffea,28),(0x3ffffffd,30),(0xfffffeb,28),(0xfffffec,28),(0xfffffed,28),(0xfffffee,28),(0xfffffef,28),(0xffffff0,28),(0xffffff1,28),(0xffffff2,28),(0x3ffffffe,30),(0xffffff3,28),(0xffffff4,28),(0xffffff5,28),(0xffffff6,28),(0xffffff7,28),(0xffffff8,28),(0xffffff9,28),(0xffffffa,28),(0xffffffb,28),(0x14,6),(0x3f8,10),(0x3f9,10),(0xffa,12),(0x1ff9,13),(0x15,6),(0xf8,8),(0x7fa,11),(0x3fa,10),(0x3fb,10),(0xf9,8),(0x7fb,11),(0xfa,8),(0x16,6),(0x17,6),(0x18,6),(0x0,5),(0x1,5),(0x2,5),(0x19,6),(0x1a,6),(0x1b,6),(0x1c,6),(0x1d,6),(0x1e,6),(0x1f,6),(0x5c,7),(0xfb,8),(0x7ffc,15),(0x20,6),(0xffb,12),(0x3fc,10),(0x1ffa,13),(0x21,6),(0x5d,7),(0x5e,7),(0x5f,7),(0x60,7),(0x61,7),(0x62,7),(0x63,7),(0x64,7),(0x65,7),(0x66,7),(0x67,7),(0x68,7),(0x69,7),(0x6a,7),(0x6b,7),(0x6c,7),(0x6d,7),(0x6e,7),(0x6f,7),(0x70,7),(0x71,7),(0x72,7),(0xfc,8),(0x73,7),(0xfd,8),(0x1ffb,13),(0x7fff0,19),(0x1ffc,13),(0x3ffc,14),(0x22,6),(0x7ffd,15),(0x3,5),(0x23,6),(0x4,5),(0x24,6),(0x5,5),(0x25,6),(0x26,6),(0x27,6),(0x6,5),(0x74,7),(0x75,7),(0x28,6),(0x29,6),(0x2a,6),(0x7,5),(0x2b,6),(0x76,7),(0x2c,6),(0x8,5),(0x9,5),(0x2d,6),(0x77,7),(0x78,7),(0x79,7),(0x7a,7),(0x7b,7),(0x7ffe,15),(0x7fc,11),(0x3ffd,14),(0x1ffd,13),(0xffffffc,28),(0xfffe6,20),(0x3fffd2,22),(0xfffe7,20),(0xfffe8,20),(0x3fffd3,22),(0x3fffd4,22),(0x3fffd5,22),(0x7fffd9,23),(0x3fffd6,22),(0x7fffda,23),(0x7fffdb,23),(0x7fffdc,23),(0x7fffdd,23),(0x7fffde,23),(0xffffeb,24),(0x7fffdf,23),(0xffffec,24),(0xffffed,24),(0x3fffd7,22),(0x7fffe0,23),(0xffffee,24),(0x7fffe1,23),(0x7fffe2,23),(0x7fffe3,23),(0x7fffe4,23),(0x1fffdc,21),(0x3fffd8,22),(0x7fffe5,23),(0x3fffd9,22),(0x7fffe6,23),(0x7fffe7,23),(0xffffef,24),(0x3fffda,22),(0x1fffdd,21),(0xfffe9,20),(0x3fffdb,22),(0x3fffdc,22),(0x7fffe8,23),(0x7fffe9,23),(0x1fffde,21),(0x7fffea,23),(0x3fffdd,22),(0x3fffde,22),(0xfffff0,24),(0x1fffdf,21),(0x3fffdf,22),(0x7fffeb,23),(0x7fffec,23),(0x1fffe0,21),(0x1fffe1,21),(0x3fffe0,22),(0x1fffe2,21),(0x7fffed,23),(0x3fffe1,22),(0x7fffee,23),(0x7fffef,23),(0xfffea,20),(0x3fffe2,22),(0x3fffe3,22),(0x3fffe4,22),(0x7ffff0,23),(0x3fffe5,22),(0x3fffe6,22),(0x7ffff1,23),(0x3ffffe0,26),(0x3ffffe1,26),(0xfffeb,20),(0x7fff1,19),(0x3fffe7,22),(0x7ffff2,23),(0x3fffe8,22),(0x1ffffec,25),(0x3ffffe2,26),(0x3ffffe3,26),(0x3ffffe4,26),(0x7ffffde,27),(0x7ffffdf,27),(0x3ffffe5,26),(0xfffff1,24),(0x1ffffed,25),(0x7fff2,19),(0x1fffe3,21),(0x3ffffe6,26),(0x7ffffe0,27),(0x7ffffe1,27),(0x3ffffe7,26),(0x7ffffe2,27),(0xfffff2,24),(0x1fffe4,21),(0x1fffe5,21),(0x3ffffe8,26),(0x3ffffe9,26),(0xffffffd,28),(0x7ffffe3,27),(0x7ffffe4,27),(0x7ffffe5,27),(0xfffec,20),(0xfffff3,24),(0xfffed,20),(0x1fffe6,21),(0x3fffe9,22),(0x1fffe7,21),(0x1fffe8,21),(0x7ffff3,23),(0x3fffea,22),(0x3fffeb,22),(0x1ffffee,25),(0x1ffffef,25),(0xfffff4,24),(0xfffff5,24),(0x3ffffea,26),(0x7ffff4,23),(0x3ffffeb,26),(0x7ffffe6,27),(0x3ffffec,26),(0x3ffffed,26),(0x7ffffe7,27),(0x7ffffe8,27),(0x7ffffe9,27),(0x7ffffea,27),(0x7ffffeb,27),(0xffffffe,28),(0x7ffffec,27),(0x7ffffed,27),(0x7ffffee,27),(0x7ffffef,27),(0x7fffff0,27),(0x3ffffee,26),(0x3fffffff,30)]
+HUFF_MAP = {}
+for _i, (_c, _l) in enumerate(HUFF):
+    HUFF_MAP[(_c, _l)] = _i
 
-FALLBACK_SERVICES = [3]
-MAX_ROUNDS = 3
-MAX_ROUNDS_HARD_CAP = 12
-POLL_MAX_ATTEMPTS = 10
-POLL_INTERVAL = 0.1
-POLL_OVERLAP_DELAY = 0.05
-STEP_THROTTLE_RETRIES = 2
-STEP_THROTTLE_SLEEP = 2.0
-MIN_STEP_GAP = 5.0
+STATIC = [(":authority",""),(":method","GET"),(":method","POST"),(":path","/"),(":path","/index.html"),(":scheme","http"),(":scheme","https"),(":status","200"),(":status","204"),(":status","206"),(":status","304"),(":status","400"),(":status","404"),(":status","500"),("accept-charset",""),("accept-encoding","gzip, deflate"),("accept-language",""),("accept-ranges",""),("accept",""),("access-control-allow-origin",""),("age",""),("allow",""),("authorization",""),("cache-control",""),("content-disposition",""),("content-encoding",""),("content-language",""),("content-length",""),("content-location",""),("content-range",""),("content-type",""),("cookie",""),("date",""),("etag",""),("expect",""),("expires",""),("from",""),("host",""),("if-match",""),("if-modified-since",""),("if-none-match",""),("if-range",""),("if-unmodified-since",""),("last-modified",""),("link",""),("location",""),("max-forwards",""),("proxy-authenticate",""),("proxy-authorization",""),("range",""),("referer",""),("refresh",""),("retry-after",""),("server",""),("set-cookie",""),("strict-transport-security",""),("transfer-encoding",""),("user-agent",""),("vary",""),("via",""),("www-authenticate","")]
 
-class Timer:
+UAS = ["Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1","Mozilla/5.0 (iPhone; CPU iPhone OS 17_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Mobile/15E148 Safari/604.1","Mozilla/5.0 (iPhone; CPU iPhone OS 18_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Mobile/15E148 Safari/604.1"]
+FPS = [{"l": "zh-CN", "p": "iPhone", "s": "428x926", "c": 4, "touch": True, "tz": "Asia/Shanghai"},{"l": "zh-CN", "p": "iPhone", "s": "390x844", "c": 6, "touch": True, "tz": "Asia/Shanghai"},{"l": "zh-CN", "p": "iPhone", "s": "393x852", "c": 6, "touch": True, "tz": "Asia/Shanghai"},{"l": "zh-CN", "p": "iPhone", "s": "430x932", "c": 6, "touch": True, "tz": "Asia/Shanghai"}]
+CH_ERR = ("CHALLENGE_REQUIRED", "CHALLENGE_WRONG", "CHALLENGE_EXPIRED", "CHALLENGE_INVALID")
+FATAL = ("BANNED", "BOT_BLOCKED")
+
+def _hpack_int(n, bits, first):
+    limit = (1 << bits) - 1
+    if n < limit:
+        return bytes([first | n])
+    out = bytearray([first | limit])
+    n -= limit
+    while n >= 128:
+        out.append((n & 0x7F) | 0x80)
+        n >>= 7
+    out.append(n)
+    return bytes(out)
+
+def _hpack_str(s):
+    b = s.encode("utf-8")
+    if len(b) < 127:
+        return bytes([len(b)]) + b
+    return _hpack_int(len(b), 7, 0x00) + b
+
+def hpack_encode(headers):
+    out = bytearray()
+    for name, value in headers:
+        name = name.lower()
+        exact = None
+        for i, (n, v) in enumerate(STATIC, start=1):
+            if n == name and v == value:
+                exact = i
+                break
+        if exact is not None:
+            out += _hpack_int(exact, 7, 0x80)
+            continue
+        name_idx = None
+        for i, (n, v) in enumerate(STATIC, start=1):
+            if n == name and v == "":
+                name_idx = i
+                break
+        if name_idx is not None:
+            out += _hpack_int(name_idx, 6, 0x40)
+            out += _hpack_str(value)
+        else:
+            out += b"\x00"
+            out += _hpack_str(name)
+            out += _hpack_str(value)
+    return bytes(out)
+
+def _dec_int(data, i, bits):
+    limit = (1 << bits) - 1
+    val = data[i] & limit
+    i += 1
+    if val < limit:
+        return val, i
+    m = 0
+    while i < len(data):
+        b = data[i]
+        i += 1
+        val += (b & 0x7F) << m
+        m += 7
+        if not (b & 0x80):
+            break
+    return val, i
+
+def _huff_decode(data):
+    out = bytearray()
+    cur = 0
+    nbits = 0
+    for byte in data:
+        for k in range(7, -1, -1):
+            cur = (cur << 1) | ((byte >> k) & 1)
+            nbits += 1
+            if (cur, nbits) in HUFF_MAP:
+                out.append(HUFF_MAP[(cur, nbits)])
+                cur = 0
+                nbits = 0
+            elif nbits > 30:
+                cur = 0
+                nbits = 0
+    return bytes(out)
+
+def _dec_str(data, i):
+    huff = bool(data[i] & 0x80)
+    ln, i = _dec_int(data, i, 7)
+    raw = data[i:i + ln]
+    i += ln
+    if huff:
+        raw = _huff_decode(raw)
+    return raw.decode("utf-8", "replace"), i
+
+class HpackDecoder(object):
     def __init__(self):
-        self.phases = {}
-        self.t0 = None
-        self.current_phase = None
-        self.invalid_reason = None
+        self.dyn = []
+    def _add(self, n, v):
+        self.dyn.insert(0, (n, v))
+        if len(self.dyn) > 4096:
+            self.dyn.pop()
+    def _lookup(self, idx):
+        if 0 < idx <= len(STATIC):
+            return STATIC[idx - 1]
+        i = idx - len(STATIC) - 1
+        if 0 <= i < len(self.dyn):
+            return self.dyn[i]
+        return ("", "")
+    def decode(self, data):
+        out = []
+        i = 0
+        n = len(data)
+        while i < n:
+            b = data[i]
+            if b & 0x80:
+                idx, i = _dec_int(data, i, 7)
+                out.append(self._lookup(idx))
+            elif b & 0x40:
+                idx, i = _dec_int(data, i, 6)
+                if idx:
+                    name = self._lookup(idx)[0]
+                    val, i = _dec_str(data, i)
+                else:
+                    name, i = _dec_str(data, i)
+                    val, i = _dec_str(data, i)
+                self._add(name, val)
+                out.append((name, val))
+            elif b & 0x20:
+                _, i = _dec_int(data, i, 5)
+            else:
+                idx, i = _dec_int(data, i, 4)
+                if idx:
+                    name = self._lookup(idx)[0]
+                    val, i = _dec_str(data, i)
+                else:
+                    name, i = _dec_str(data, i)
+                    val, i = _dec_str(data, i)
+                out.append((name, val))
+        return out
 
-    def start(self, phase):
-        if self.current_phase is not None:
-            self.stop()
-        self.current_phase = phase
-        self.t0 = time.time()
+class H2Error(Exception):
+    pass
 
-    def stop(self):
-        if self.current_phase is not None and self.t0 is not None:
-            dt = time.time() - self.t0
-            self.phases[self.current_phase] = self.phases.get(self.current_phase, 0.0) + dt
-            self.current_phase = None
-            self.t0 = None
-
-    def add(self, name, seconds):
-        self.phases[name] = self.phases.get(name, 0.0) + seconds
-
-    def total(self):
-        return sum(self.phases.values())
-
-    def summary(self):
-        parts = []
-        for name, secs in sorted(self.phases.items(), key=lambda x: -x[1]):
-            pct = secs / self.total() * 100 if self.total() > 0 else 0
-            parts.append(f"    {name}: {secs:.1f}s ({pct:.0f}%)")
-        return '\n'.join(parts)
-
-    def __repr__(self):
-        return f"Timer({self.total():.1f}s total, {len(self.phases)} phases)"
-
-def resolve_service(ticket, session=None, verbose=True):
-    svc, cp, valid, reason = resolve_meta(ticket, session=session, verbose=verbose)
-    return svc, cp
-
-def resolve_meta(ticket, session=None, verbose=True):
-    cp = None
-    try:
-        meta = AUTH.get_session_metadata(ticket, session=session)
-        if isinstance(meta, dict):
-            if meta.get('success') is False and not meta.get('transient'):
-                msg = str(meta.get('message') or meta.get('error') or '').lower()
-                if any(m in msg for m in AUTH.INVALID_MARKERS):
-                    reason = str(meta.get('message') or meta.get('error') or 'invalid link')
-                    if verbose:
-                        print(f'  [meta] 无效链接: {reason}', flush=True)
-                    return None, cp, False, reason
-            data = meta.get('data', meta)
-            if isinstance(data, dict):
-                profile = data.get('activeRevenueProfile', {})
-                if isinstance(profile, dict) and 'service' in profile:
-                    svc = int(profile['service'])
-                    try:
-                        cpn = profile.get('checkpointCount')
-                        cp = int(cpn) if cpn else None
-                    except (TypeError, ValueError):
-                        cp = None
-                    if verbose:
-                        dur = data.get('duration', '?')
-                        print(f'  [meta] service={svc} checkpointCount={cp} duration={dur}h', flush=True)
-                    return svc, cp, True, None
-    except Exception as e:
-        if verbose:
-            print(f'  [meta] 获取失败: {e}', flush=True)
-    return None, cp, True, None
-
-def throttled(r):
-    if not isinstance(r, dict):
-        return False
-    msg = ' '.join(str(r.get(k, '')) for k in ('message', 'error', 'detail')).lower()
-    return ('too fast' in msg) or ('slow down' in msg) or ('too many' in msg)
-
-def do_step_with_retry(ticket, service=None, session=None, verbose=True, timer=None,
-                       gap_state=None, overlap_poll=False, poll_session=None):
-    services_to_try = []
-    if service is not None:
-        services_to_try.append(service)
-    for svc in FALLBACK_SERVICES:
-        if svc not in services_to_try:
-            services_to_try.append(svc)
-
-    if timer:
-        timer.start('step')
-
-    if gap_state is not None and gap_state.get('ts'):
-        gap = time.time() - gap_state['ts']
-        if gap < MIN_STEP_GAP:
-            if verbose:
-                print(f'  [step] 距上次 step 仅 {gap:.1f}s，等待 {MIN_STEP_GAP - gap:.1f}s...', flush=True)
-            time.sleep(MIN_STEP_GAP - gap)
-
-    overlap_box = {}
-    overlap_thread = None
-
-    def overlap_poll_worker():
-        time.sleep(POLL_OVERLAP_DELAY)
-        sess = poll_session if poll_session is not None else session
-        for _ in range(POLL_MAX_ATTEMPTS):
-            if overlap_box.get('stop'):
-                return
-            try:
-                st = AUTH.get_session_status(ticket, session=sess)
-                data = st.get('data', st) if isinstance(st, dict) else {}
-                k = data.get('key', '')
-                if k and k != 'KEY_NOT_FOUND':
-                    overlap_box['key'] = k
-                    return
-            except Exception:
-                pass
-            time.sleep(POLL_INTERVAL)
-
-    for svc in services_to_try:
-        for attempt in range(STEP_THROTTLE_RETRIES + 1):
-            try:
-                t0 = time.time()
-                if overlap_poll and overlap_thread is None:
-                    overlap_thread = threading.Thread(target=overlap_poll_worker, daemon=True)
-                    overlap_thread.start()
-                r = AUTH.do_step(ticket, service=svc, session=session)
-                dt = time.time() - t0
-                if gap_state is not None:
-                    gap_state['ts'] = time.time()
-                if isinstance(r, dict) and r.get('success'):
-                    if timer:
-                        timer.stop()
-                    if verbose:
-                        print(f'  [step] service={svc} -> 成功 ({(dt * 1000):.0f}ms)', flush=True)
-                    return svc, r, overlap_box
-                if throttled(r):
-                    if attempt < STEP_THROTTLE_RETRIES:
-                        if verbose:
-                            print(f'  [step] service={svc}: 限流，退避 {STEP_THROTTLE_SLEEP}s 后重试'
-                                  f' ({attempt + 1}/{STEP_THROTTLE_RETRIES})', flush=True)
-                        time.sleep(STEP_THROTTLE_SLEEP)
-                        continue
-                if verbose:
-                    err = json.dumps(r)[:200] if isinstance(r, dict) else str(r)[:200]
-                    print(f'  [step] service={svc}: {err} ({(dt * 1000):.0f}ms)', flush=True)
-                break
-            except Exception as e:
-                if verbose:
-                    print(f'  [step] service={svc} 异常: {e}', flush=True)
-                break
-
-    if timer:
-        timer.stop()
-    overlap_box['stop'] = True
-    return None, {'success': False, 'error': 'all services failed'}, overlap_box
-
-def check_key_in_response(ticket, session=None, verbose=True, timer=None):
-    try:
-        if timer:
-            timer.start('poll')
-        st = AUTH.get_session_status(ticket, session=session)
-        if timer:
-            timer.stop()
-        st_data = st.get('data', st) if isinstance(st, dict) else {}
-        key = st_data.get('key', '')
-        if key and key != 'KEY_NOT_FOUND':
-            if verbose:
-                print(f'  [key] 发现 KEY: {key}', flush=True)
-            return key
-        if verbose and key:
-            print(f'  [key] 尚未就绪: {key}', flush=True)
-    except Exception as e:
-        if verbose:
-            print(f'  [key] 检查异常: {e}', flush=True)
-    return None
-
-def poll_for_key(ticket, session=None, max_attempts=3, interval=0, verbose=True, timer=None):
-    for i in range(max_attempts):
-        key = check_key_in_response(ticket, session=session, verbose=verbose, timer=timer)
-        if key:
-            return key
-        if interval > 0 and i < max_attempts - 1:
-            time.sleep(interval)
-    return None
-
-def solve_chain(ticket, verbose=True, max_rounds=MAX_ROUNDS, session=None):
-    if session is None:
-        session = AUTH.create_session()
-    current_ticket = ticket
-    current_service = None
-    timer = Timer()
-    invalid_reason = [None]
-    round_cap = max(max_rounds, 1)
-    round_idx = 0
-    last_exit = ['round-exhausted']
-    gap_state = {'ts': 0.0}
-
-    while round_idx < round_cap:
-        if verbose:
-            print(f'  [{round_idx + 1}/{round_cap}]', flush=True)
-        if timer:
-            timer.start('meta')
-        meta_session = AUTH.create_session()
-        meta_future = None
-        stat_future = None
-        cpc = None
+class H2Client(object):
+    def __init__(self, host, port=443, timeout=20):
+        self.host = host
+        self.port = port
+        self.timeout = timeout
+        self.sock = None
+        self._stream_id = 1
+    def _ctx(self):
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+        ctx.maximum_version = ssl.TLSVersion.TLSv1_3
         try:
-            with ThreadPoolExecutor(max_workers=2) as pool:
-                meta_future = pool.submit(resolve_meta, current_ticket, meta_session, verbose)
+            ctx.set_alpn_protocols(["h2", "http/1.1"])
+        except Exception:
+            pass
+        try:
+            ctx.set_ciphers("ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:ECDHE-RSA-AES128-SHA:ECDHE-RSA-AES256-SHA")
+        except Exception:
+            pass
+        return ctx
+    def connect(self):
+        raw = socket.create_connection((self.host, self.port), timeout=self.timeout)
+        raw.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        self.sock = self._ctx().wrap_socket(raw, server_hostname=self.host)
+        self.sock.sendall(H2_PREFACE)
+        self._send_frame(FRAME_SETTINGS, 0, b"")
+    def _send_frame(self, ftype, flags, payload, stream=0):
+        header = struct.pack(">I", len(payload))[1:] + bytes([ftype, flags]) + struct.pack(">I", stream & 0x7FFFFFFF)
+        self.sock.sendall(header + payload)
+    def _read_exact(self, n):
+        buf = b""
+        while len(buf) < n:
+            chunk = self.sock.recv(n - len(buf))
+            if not chunk:
+                raise H2Error("连接关闭")
+            buf += chunk
+        return buf
+    def _read_frame(self):
+        hdr = self._read_exact(9)
+        length = struct.unpack(">I", b"\x00" + hdr[:3])[0]
+        ftype = hdr[3]
+        flags = hdr[4]
+        stream = struct.unpack(">I", hdr[5:9])[0] & 0x7FFFFFFF
+        payload = self._read_exact(length) if length else b""
+        return ftype, flags, stream, payload
+    def close(self):
+        try:
+            if self.sock:
+                self.sock.close()
+        except Exception:
+            pass
 
-                if round_idx == 0:
-                    stat_session = AUTH.create_session()
-                    stat_future = pool.submit(check_key_in_response, current_ticket,
-                                              stat_session, verbose, None)
+def _hdrs(path, vid):
+    fp = random.choice(FPS)
+    return [(":method", "GET"), (":scheme", "https"), (":authority", HOST), (":path", path),("user-agent", random.choice(UAS)),("x-client-info", urllib.parse.quote(json.dumps(fp, separators=(",", ":")))),("accept", "application/json"),("accept-language", "zh-CN,zh-Hans;q=0.9"),("referer", "https://%s/" % HOST),("origin", "https://%s" % HOST),("sec-fetch-site", "same-origin"),("sec-fetch-mode", "cors"),("sec-fetch-dest", "empty"),("priority", "u=1, i"),("cookie", "ds_vid=" + vid)]
 
-                if stat_future is not None:
-                    try:
-                        early = stat_future.result(timeout=6)
-                    except Exception:
-                        early = None
-                    if early:
-                        if verbose:
-                            print(f'  [early] 该链接已完成，直接返回已有 KEY', flush=True)
-                        return early, timer
-
-                try:
-                    svc, cpc, mvalid, mreason = meta_future.result(timeout=6)
-                    current_service = svc
-                    if not mvalid:
-                        invalid_reason[0] = mreason
-                        last_exit[0] = 'invalid-link'
-                        timer.invalid_reason = mreason
-                        return None, timer
-                except Exception:
-                    current_service, cpc = None, None
-        finally:
-            meta_session.close()
-            try:
-                if stat_future is not None:
-                    stat_session.close()
-            except Exception:
-                pass
-        if timer:
-            timer.stop()
-
-        if cpc is not None:
-            need = cpc + 1
-            if need > round_cap:
-                round_cap = min(need, MAX_ROUNDS_HARD_CAP)
-                if verbose:
-                    print(f'  [rounds] checkpointCount={cpc} -> 需 {need} 轮 (当前 cap={round_cap})', flush=True)
-
-        if current_service is not None and verbose:
-            print(f'  [service] metadata: {current_service}', flush=True)
-
-        last_step = round_idx > 0
-        service, resp, overlap = do_step_with_retry(
-            current_ticket,
-            service=current_service,
-            session=session,
-            verbose=verbose,
-            timer=timer,
-            gap_state=gap_state,
-            overlap_poll=last_step,
-            poll_session=None
-        )
-        if overlap.get('key'):
-            if verbose:
-                print(f'  [key] 发现 KEY (重叠轮询): {overlap["key"]}', flush=True)
-            return overlap['key'], timer
-        if service is None:
-            if verbose:
-                print(f'  [-] 第 {round_idx + 1} round step 全部失败, 跳过', flush=True)
-            last_exit[0] = 'step-failed'
-            round_idx += 1
-            continue
-
-        current_service = service
-        url = (resp.get('data') or {}).get('url', '')
-        if not url:
-            if verbose:
-                print(f'  [-] 响应中没有 URL', flush=True)
-            last_exit[0] = 'no-url'
-            round_idx += 1
-            continue
-
-        if verbose:
-            url_short = url[:80] + '...' if len(url) > 80 else url
-            print(f'  [url] {url_short}', flush=True)
-
-        if url == 'about:blank':
-            if verbose:
-                print(f'  [poll] (about:blank) 轮询 key, 最多 {POLL_MAX_ATTEMPTS} 次/每次{POLL_INTERVAL}s...', flush=True)
-            key = poll_for_key(current_ticket, session=session, verbose=verbose, timer=timer,
-                               max_attempts=POLL_MAX_ATTEMPTS, interval=POLL_INTERVAL)
-            if key:
-                return key, timer
-            if verbose:
-                print(f'  [-] 轮询 {POLL_MAX_ATTEMPTS} 次仍未拿到 key', flush=True)
-            last_exit[0] = 'poll-timeout'
-            round_idx += 1
-            continue
-
-        callback = AUTH.decode_callback_url(url)
-        if callback:
-            next_ticket = AUTH.extract_ticket_from_callback(callback)
-            if next_ticket and len(next_ticket) > 50:
-                if verbose:
-                    print(f'  [next] 新 ticket: {next_ticket[:24]}... ({len(next_ticket)} chars)', flush=True)
-                current_ticket = next_ticket
-                round_idx += 1
+def _one_request(path, vid, timeout=25):
+    c = H2Client(HOST, timeout=timeout)
+    try:
+        c.connect()
+    except Exception as e:
+        return {"ok": False, "error": "NETWORK", "message": str(e)}
+    try:
+        c._send_frame(FRAME_HEADERS, FLAG_END_HEADERS | FLAG_END_STREAM, hpack_encode(_hdrs(path, vid)), 1)
+        dec = HpackDecoder()
+        body = bytearray()
+        c.sock.settimeout(timeout)
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            ft, fl, sid, pl = c._read_frame()
+            if ft == FRAME_SETTINGS and not (fl & FLAG_ACK):
+                c._send_frame(FRAME_SETTINGS, FLAG_ACK, b"")
                 continue
+            if ft == FRAME_PING and not (fl & FLAG_ACK):
+                c._send_frame(FRAME_PING, FLAG_ACK, pl)
+                continue
+            if ft == FRAME_GOAWAY:
+                break
+            if ft in (FRAME_HEADERS, FRAME_CONT):
+                dec.decode(pl)
+                if fl & FLAG_END_STREAM:
+                    break
+            elif ft == FRAME_DATA:
+                body += pl
+                if pl:
+                    c._send_frame(FRAME_WINDOW, 0, len(pl).to_bytes(4, "big"), 0)
+                    c._send_frame(FRAME_WINDOW, 0, len(pl).to_bytes(4, "big"), sid)
+                if fl & FLAG_END_STREAM:
+                    break
+            elif ft == FRAME_RST:
+                break
+        if not body:
+            return {"ok": False, "error": "EMPTY", "message": "无响应"}
+        return json.loads(bytes(body).decode("utf-8", "replace"))
+    except Exception as e:
+        return {"ok": False, "error": "NETWORK", "message": str(e)}
+    finally:
+        c.close()
 
-        if verbose:
-            print(f'  [info] 无 r= 回调, 尝试轮询 key...', flush=True)
-        key = check_key_in_response(current_ticket, session=session, verbose=verbose, timer=timer)
-        if key:
-            return key, timer
-        last_exit[0] = 'no-callback-no-key'
-        break
+def arith(q):
+    m = re.findall(r"\d+", q or "")
+    if len(m) < 2:
+        return ""
+    a, b = int(m[0]), int(m[1])
+    if "+" in q:
+        return str(a + b)
+    if "-" in q or "\u2212" in q:
+        return str(a - b)
+    if "\u00d7" in q or "*" in q or "x" in q:
+        return str(a * b)
+    if "\u00f7" in q or "/" in q:
+        return str(a // b) if b else "0"
+    return str(a + b)
 
-    key = check_key_in_response(current_ticket, session=session, verbose=verbose, timer=timer)
-    if key:
-        return key, timer
-
-    if verbose:
-        print(f'\n[-] 未获取到 key (原因: {last_exit[0]}; 已跑 {round_idx}/{round_cap} 轮)', flush=True)
-    return None, timer
-
-def main():
-    ap = argparse.ArgumentParser(
-        description='Delta自动求解器',
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog='''示例:
-  %(prog)s "https://auth.platorelay.com/a?d=<ticket>"
-  %(prog)s "<raw_ticket>"
-  %(prog)s ticket.txt
-  %(prog)s --generate 3
-        '''
-    )
-    ap.add_argument('target', nargs='?', help='auth URL / ticket / 文件路径')
-    ap.add_argument('--generate', '-g', type=int, default=0,
-                    help='通过 Platoboost API 生成 N 条测试链接')
-    ap.add_argument('--quiet', '-q', action='store_true',
-                    help='静默模式 (只输出结果)')
-    ap.add_argument('--max-rounds', type=int, default=MAX_ROUNDS,
-                    help=f'最大 round 数 (默认 {MAX_ROUNDS})')
-    ap.add_argument('--no-auto', action='store_true',
-                    help='只生成链接, 不求解')
-    args = ap.parse_args()
-
-    verbose = not args.quiet
-
-    AUTH.start_version_watcher()
-
-    tickets = []
-    gen_start = time.time()
-
-    if args.generate > 0:
-        if verbose:
-            print(f'[*] 生成 {args.generate} 条链接...', flush=True)
-        try:
-            urls = LG.batch_links(args.generate)
-            tickets = [AUTH.extract_ticket(u) for u in urls]
-            if verbose:
-                print(f'[*] 成功获取 {len(tickets)} 条 ticket', flush=True)
-        except Exception as e:
-            print(f'[-] 生成链接失败: {e}', file=sys.stderr, flush=True)
-            sys.exit(1)
-    elif args.target:
-        tickets.append(AUTH.extract_ticket_from_arg(args.target))
-    else:
-        ap.print_help()
-        sys.exit(1)
-
-    if args.no_auto:
-        for t in tickets:
-            print(f'https://auth.platorelay.com/a?d={t}')
-        return
-
-    results = []
-    for i, ticket in enumerate(tickets):
-        t0 = time.time()
-        key, timer = solve_chain(ticket, verbose=verbose, max_rounds=args.max_rounds,
-                                 session=None)
-        dt = time.time() - t0
-        results.append((i, key, timer, dt))
-
-        if key:
-            print(f'\n{"=" * 60}', flush=True)
-            print(f'[+] DELTA KEY #{i + 1}: {key}', flush=True)
-            print(f'[+] 耗时: {dt:.1f}s', flush=True)
-            print(f'[+] 阶段明细:')
-            print(timer.summary())
-            print(f'{"=" * 60}', flush=True)
-        elif verbose:
-            print(f'\n[-] 链接 {i + 1}: 未获取到 key', flush=True)
-            if timer.total() > 0:
-                print(f'[-] 耗时: {dt:.1f}s')
-                print(f'[-] 阶段明细:')
-                print(timer.summary())
-
-    total_elapsed = time.time() - gen_start
-    success_count = sum(1 for _, key, _, _ in results if key)
-    total_timer = Timer()
-    for _, _, timer, _ in results:
-        for name, secs in timer.phases.items():
-            total_timer.add(name, secs)
-
-    print(f'\n{"=" * 60}', flush=True)
-    print(f'[+] 汇总: {success_count}/{len(tickets)} 成功', flush=True)
-    print(f'[+] 总耗时: {total_elapsed:.1f}s', flush=True)
-    if len(tickets) > 0:
-        print(f'[+] 平均每链接: {total_elapsed / len(tickets):.1f}s', flush=True)
-    if total_timer.total() > 0:
-        print(f'[+] 总阶段明细:')
-        print(total_timer.summary())
-    print(f'{"=" * 60}', flush=True)
+def solve_delta(link):
+    path = "/api/solve?url=" + urllib.parse.quote(link, safe="")
+    vid = "v_" + os.urandom(8).hex()
+    r = _one_request(path, vid, timeout=25)
+    if r.get("ok"):
+        return r
+    if r.get("error") in CH_ERR:
+        tok = r.get("token")
+        q = r.get("question", "")
+        if not tok or not q:
+            c = _one_request("/api/challenge", "v_" + os.urandom(8).hex(), 25)
+            tok = tok or c.get("token")
+            q = q or c.get("question", "")
+        ans = arith(q)
+        p = ("/api/solve?url=" + urllib.parse.quote(link, safe="") + "&ct=" + urllib.parse.quote(tok or "") + "&ca=" + urllib.parse.quote(ans))
+        return _one_request(p, "v_" + os.urandom(8).hex(), 25)
+    return r
 
 app = FastAPI()
 
@@ -455,15 +315,13 @@ def health_check():
 @app.get("/delta")
 def delta(url: str = Query(...)):
     try:
-        ticket = AUTH.extract_ticket_from_arg(url)
-        if not ticket or len(ticket) < 33:
-            return {"key": None, "error": "invalid url (no ticket)"}
-        key, timer = solve_chain(ticket, verbose=False, max_rounds=MAX_ROUNDS, session=None)
-        if key:
-            return {"key": key, "error": None}
-        return {"key": None, "error": "solve failed"}
+        data = solve_delta(url)
+        if data.get("ok"):
+            return {"key": data.get("key", ""), "error": None}
+        return {"key": None, "error": str(data.get("error", "solve failed"))}
     except Exception as e:
         return {"key": None, "error": f"solve exception: {type(e).__name__} - {str(e)}"}
 
-if __name__ == '__main__':
-    main()
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)

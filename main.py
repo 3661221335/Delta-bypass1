@@ -6,6 +6,7 @@ import re
 import socket
 import ssl
 import struct
+import base64
 import urllib.parse
 from fastapi import FastAPI, Query
 
@@ -187,15 +188,37 @@ class H2Client(object):
             ctx.set_alpn_protocols(["h2", "http/1.1"])
         except Exception:
             pass
-        try:
-            ctx.set_ciphers("ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:ECDHE-RSA-AES128-SHA:ECDHE-RSA-AES256-SHA")
-        except Exception:
-            pass
         return ctx
     def connect(self):
-        raw = socket.create_connection((self.host, self.port), timeout=self.timeout)
-        raw.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-        self.sock = self._ctx().wrap_socket(raw, server_hostname=self.host)
+        proxy_url = os.environ.get("PROXY_LIST")
+        if proxy_url:
+            parsed = urllib.parse.urlparse(proxy_url)
+            proxy_host = parsed.hostname
+            proxy_port = parsed.port or 80
+            proxy_user = parsed.username or ""
+            proxy_pass = parsed.password or ""
+            
+            raw = socket.create_connection((proxy_host, proxy_port), timeout=self.timeout)
+            auth_str = f"{proxy_user}:{proxy_pass}"
+            auth_b64 = base64.b64encode(auth_str.encode()).decode()
+            connect_req = f"CONNECT {self.host}:{self.port} HTTP/1.1\r\nHost: {self.host}:{self.port}\r\nProxy-Authorization: Basic {auth_b64}\r\n\r\n"
+            raw.sendall(connect_req.encode())
+            
+            resp = b""
+            while b"\r\n\r\n" not in resp:
+                chunk = raw.recv(1024)
+                if not chunk:
+                    break
+                resp += chunk
+                
+            if b"200" not in resp.split(b"\r\n")[0]:
+                raise H2Error(f"Proxy CONNECT failed: {resp.decode('utf-8', 'ignore')}")
+                
+            self.sock = self._ctx().wrap_socket(raw, server_hostname=self.host)
+        else:
+            raw = socket.create_connection((self.host, self.port), timeout=self.timeout)
+            self.sock = self._ctx().wrap_socket(raw, server_hostname=self.host)
+            
         self.sock.sendall(H2_PREFACE)
         self._send_frame(FRAME_SETTINGS, 0, b"")
     def _send_frame(self, ftype, flags, payload, stream=0):

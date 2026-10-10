@@ -9,6 +9,8 @@ import struct
 import base64
 import urllib.parse
 from fastapi import FastAPI, Query
+from pydantic import BaseModel
+from typing import List
 
 HOST = "delta-solve.app.workbuddy.host"
 H2_PREFACE = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
@@ -344,6 +346,50 @@ def delta(url: str = Query(...)):
         return {"key": None, "error": str(data.get("error", "solve failed"))}
     except Exception as e:
         return {"key": None, "error": f"solve exception: {type(e).__name__} - {str(e)}"}
+
+# ===== Sub2API 兼容层 =====
+class ChatMessage(BaseModel):
+    role: str
+    content: str
+
+class ChatCompletionRequest(BaseModel):
+    model: str
+    messages: List[ChatMessage]
+
+@app.post("/v1/chat/completions")
+async def chat_completions(req: ChatCompletionRequest):
+    user_text = ""
+    for msg in req.messages:
+        if msg.role == "user":
+            user_text = msg.content
+            break
+
+    url_match = re.search(r'https?://[^\s]+', user_text)
+    if not url_match:
+        content = "请提供需要解卡的链接（以 http:// 或 https:// 开头）"
+    else:
+        target = url_match.group(0)
+        try:
+            result = solve_delta(target)
+            if result.get("ok"):
+                content = f"解卡成功！\nKey: {result.get('key', '')}"
+            else:
+                content = f"解卡失败：{result.get('error', '未知错误')}"
+        except Exception as e:
+            content = f"解卡出错：{str(e)}"
+
+    return {
+        "id": "chatcmpl-001",
+        "object": "chat.completion",
+        "created": 1234567890,
+        "model": req.model,
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": content},
+            "finish_reason": "stop"
+        }],
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+    }
 
 if __name__ == "__main__":
     import uvicorn

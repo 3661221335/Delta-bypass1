@@ -366,7 +366,7 @@ async def chat_completions(req: ChatCompletionRequest):
 
     url_match = re.search(r'https?://[^\s]+', user_text)
     if not url_match:
-        content = "请提供需要解卡的链接（以 http:// 或 https:// 开头）"
+        content = user_text  # 关键修改：检测时原样返回
     else:
         target = url_match.group(0)
         try:

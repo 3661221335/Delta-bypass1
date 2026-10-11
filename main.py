@@ -52,6 +52,8 @@ UA_SCREEN = {}
 _client_version = FALLBACK_VERSION
 _client_version_at = time.time()
 
+LAST_ERROR = {"msg": ""}
+
 
 def _env_proxy_url():
     proxy_list = (os.environ.get('PROXY_LIST') or '').strip()
@@ -210,9 +212,11 @@ else:
 
 
 def do_step(ticket, service=3):
+    global LAST_ERROR
     step_ua = rand_ua()
     built = build_meta_stream(ticket, user_agent=step_ua)
     if built is None:
+        LAST_ERROR["msg"] = "ticket 长度不足"
         return {"success": False, "error": "ticket 长度不足"}
     meta, stream = built
     url = f"{AUTH_API}/session/step?ticket={urllib.parse.quote(ticket)}&service={service}"
@@ -227,13 +231,20 @@ def do_step(ticket, service=3):
                 'x-client-version': _client_version
             })
             if r.status != 200:
+                LAST_ERROR["msg"] = f"http {r.status}: {r.data[:200]}"
                 time.sleep(0.5)
                 continue
-            return json.loads(r.data)
-        except Exception:
+            parsed = json.loads(r.data)
+            if isinstance(parsed, dict):
+                err = parsed.get("error") or parsed.get("message") or ""
+                if err:
+                    LAST_ERROR["msg"] = f"step: {err}"
+            return parsed
+        except Exception as e:
+            LAST_ERROR["msg"] = f"exception: {str(e)[:200]}"
             time.sleep(0.5)
             continue
-    return {"success": False, "error": "step failed"}
+    return {"success": False, "error": LAST_ERROR["msg"] or "step failed"}
 
 
 def get_json(path_qs):
@@ -262,6 +273,8 @@ def extract_ticket(arg):
 
 
 def solve_chain(ticket, max_rounds=8):
+    global LAST_ERROR
+    LAST_ERROR["msg"] = ""
     deadline = time.time() + 45
     for round_idx in range(max_rounds):
         if time.time() > deadline:
@@ -288,7 +301,7 @@ def solve_chain(ticket, max_rounds=8):
     k = st_data.get('key', '')
     if k and k != 'KEY_NOT_FOUND':
         return {"key": k, "error": None}
-    return {"key": None, "error": "solve failed"}
+    return {"key": None, "error": LAST_ERROR["msg"] or "solve failed"}
 
 
 app = FastAPI()

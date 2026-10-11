@@ -272,10 +272,10 @@ def extract_ticket(arg):
     return t
 
 
-def solve_chain(ticket, max_rounds=8):
+def solve_chain(ticket, max_rounds=3):
     global LAST_ERROR
     LAST_ERROR["msg"] = ""
-    deadline = time.time() + 45
+    deadline = time.time() + 12
     for round_idx in range(max_rounds):
         if time.time() > deadline:
             break
@@ -287,7 +287,7 @@ def solve_chain(ticket, max_rounds=8):
                 return {"key": r["key"], "error": None}
             url = (r.get("data") or {}).get("url", "")
             if url == "about:blank":
-                for _ in range(10):
+                for _ in range(6):
                     st = get_json(f"session/status?ticket={urllib.parse.quote(ticket)}")
                     st_data = st.get('data', st) if isinstance(st, dict) else {}
                     k = st_data.get('key', '')
@@ -295,7 +295,7 @@ def solve_chain(ticket, max_rounds=8):
                         return {"key": k, "error": None}
                     time.sleep(0.2)
                 continue
-        time.sleep(0.5)
+        time.sleep(0.3)
     st = get_json(f"session/status?ticket={urllib.parse.quote(ticket)}")
     st_data = st.get('data', st) if isinstance(st, dict) else {}
     k = st_data.get('key', '')

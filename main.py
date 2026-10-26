@@ -1,98 +1,120 @@
-import time
+import base64
 import json
+import random
+import threading
+import time
+import ssl
 import urllib.parse
+
 import requests
-from fastapi import FastAPI, Query
+from requests.adapters import HTTPAdapter
 
-app = FastAPI()
+from auth_client import (
+    api_step, api_status, extract_ticket, parse_new_ticket, MIN_TICKET_LEN,
+    build_meta_payload, build_stream_payload, DEFAULT_CLIENT_VERSION
+)
 
-# 官方接口
-BASE_URL = "https://auth.platorelay.com"
-CLIENT_VERSION = "8.2.1"
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "application/json",
-    "Content-Type": "application/json",
-    "X-Client-Name": "platoboost webclient",
-    "X-Client-Version": CLIENT_VERSION,
-}
+try:
+    import orjson
+    def json_loads(s):
+        return orjson.loads(s)
+except ImportError:
+    def json_loads(s):
+        return json.loads(s)
 
-# 缓存机制（24小时）
-CACHE = {}
+# 代理设置（如果你之前有代理，可以在这里放开）
+PROXY = None
+# PROXY = "http://user:pass@ip:port"
 
-def get_ticket(url: str):
-    parsed = urllib.parse.urlparse(url)
-    qs = urllib.parse.parse_qs(parsed.query)
-    return qs.get("d", [""])[0]
+_session = None
+_session_lock = threading.Lock()
 
-def solve_delta(ticket: str):
-    if not ticket or len(ticket) < 33:
-        return {"error": "invalid url (no ticket)"}
+def get_session():
+    global _session
+    if _session is None:
+        with _session_lock:
+            if _session is None:
+                s = requests.Session()
+                adapter = HTTPAdapter(pool_connections=50, pool_maxsize=50)
+                s.mount('http://', adapter)
+                s.mount('https://', adapter)
+                if PROXY:
+                    s.proxies = {"http": PROXY, "https": PROXY}
+                _session = s
+    return _session
 
-    # 查缓存
-    if ticket in CACHE:
-        cached_time, key = CACHE[ticket]
-        if time.time() - cached_time < 86400:
-            return {"key": key, "cached": True, "error": None}
+class Timer:
+    def __init__(self):
+        self.t0 = time.time()
+        self._total = 0.0
+    def total(self):
+        return time.time() - self.t0
 
-    # 1. 发送 Step 请求
-    step_url = f"{BASE_URL}/api/session/step?ticket={ticket}&service=1"
-    payload = {
-        "captcha": None,
-        "meta": "",
-        "stream": "",
-        "resolved": True
-    }
+def solve_chain(ticket, use_proxy=False, max_retries=3):
+    timer = Timer()
     
-    try:
-        r = requests.put(step_url, headers=HEADERS, json=payload, timeout=15)
-        res = r.json()
-    except Exception as e:
-        return {"error": f"net error: {e}"}
+    if not ticket or len(ticket) < MIN_TICKET_LEN:
+        res = type('obj', (object,), {'invalid_reason': 'ticket too short'})
+        return None, res
 
-    if not res.get("success"):
-        msg = str(res)
-        if "expired" in msg: return {"error": "链接已过期"}
-        if "account-unlock-required" in msg: return {"error": "需要账号验证(IP被风控)"}
-        return {"error": f"step failed: {msg}"}
-
-    # 如果官方下发了新会话
-    data = res.get("data") or {}
-    new_url = data.get("url")
-    if new_url and new_url != "about:blank":
-        new_ticket = get_ticket(new_url)
-        if new_ticket:
-            ticket = new_ticket
-
-    # 2. 轮询查卡
-    status_url = f"{BASE_URL}/api/session/status?ticket={ticket}"
-    for _ in range(15):
-        time.sleep(2)
+    session = get_session()
+    step_url = "https://auth.platorelay.com/api/session/step?ticket=%s&service=1" % ticket
+    
+    for attempt in range(max_retries):
         try:
-            sr = requests.get(status_url, headers=HEADERS, timeout=10)
-            sres = sr.json()
-        except Exception:
+            meta = build_meta_payload(ticket, 0)
+            stream = build_stream_payload(ticket, 1)
+            
+            payload = {
+                "captcha": None,
+                "meta": meta,
+                "stream": stream,
+                "resolved": True
+            }
+            
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+                "X-Client-Name": "platoboost webclient",
+                "X-Client-Version": DEFAULT_CLIENT_VERSION
+            }
+
+            r = session.put(step_url, json=payload, headers=headers, timeout=15)
+            res_json = r.json()
+
+            if not res_json.get("success"):
+                msg = str(res_json)
+                if "expired" in msg or "invalid" in msg:
+                    obj = type('obj', (object,), {'invalid_reason': msg})
+                    return None, obj
+                
+                time.sleep(2)
+                continue
+
+            data = res_json.get("data") or {}
+            new_url = data.get("url")
+            if new_url and new_url != "about:blank":
+                nd = parse_new_ticket(new_url)
+                if nd:
+                    ticket = nd
+            
+            # 轮询状态
+            status_url = "https://auth.platorelay.com/api/session/status?ticket=%s" % ticket
+            for _ in range(10):
+                time.sleep(1.2)
+                sr = session.get(status_url, headers=headers, timeout=10)
+                sres = sr.json()
+                key = (sres.get("data") or {}).get("key")
+                if key and key != "KEY_NOT_FOUND":
+                    return key, timer
+                
+                if "expired" in str(sres):
+                    obj = type('obj', (object,), {'invalid_reason': 'expired during status'})
+                    return None, obj
+                    
+        except Exception as e:
+            time.sleep(2)
             continue
-            
-        key = (sres.get("data") or {}).get("key")
-        if key and key != "KEY_NOT_FOUND":
-            CACHE[ticket] = (time.time(), key)
-            return {"key": key, "cached": False, "error": None}
-            
-        if "expired" in str(sres):
-            return {"error": "链接已过期"}
 
-    return {"error": "未签发卡密 (not issued)"}
-
-@app.get("/delta")
-def api_delta(url: str = Query(...)):
-    ticket = get_ticket(url)
-    if not ticket:
-        return {"key": None, "error": "缺少 d= 参数"}
-    
-    result = solve_delta(ticket)
-    return result
-
-@app.get("/health")
-def health():
-    return {"status": "ok"}
+    return None, timer

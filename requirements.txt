@@ -1,9 +1,5 @@
-requests>=2.28
-urllib3>=1.26
-pycryptodome>=3.15
-fake-useragent>=1.5
-fastapi[standard]>=0.100
-uvicorn>=0.23
-uvloop>=0.19; sys_platform != "win32"
-httptools>=0.6
-orjson>=3.9
+fastapi
+uvicorn[standard]
+requests
+urllib3
+pycryptodome

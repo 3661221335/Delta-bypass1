@@ -126,14 +126,15 @@ def pick_d(url):
     except Exception: return None
 
 def get_turnstile_token(log=lambda m: None):
-    log("启动 Playwright 自动提取 Token...")
+    log("启动 Playwright 自动提取 Token（有头模式）...")
     token = None
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True, args=[
+            browser = p.chromium.launch(headless=False, args=[
                 "--no-sandbox", 
                 "--disable-blink-features=AutomationControlled",
-                "--disable-dev-shm-usage"
+                "--disable-dev-shm-usage",
+                "--window-size=1920,1080"
             ])
             context = browser.new_context(user_agent=UA)
             page = context.new_page()
@@ -146,6 +147,14 @@ def get_turnstile_token(log=lambda m: None):
                     log(f"成功自动抓取到 Token（长度 {len(token)}）")
                     break
                 time.sleep(1)
+            
+            if not token:
+                log("超时未抓取到 Token，正在检查页面源码...")
+                content = page.content()
+                if "Cloudflare" in content or "Just a moment" in content:
+                    log("发现页面被 Cloudflare 拦截（IP 风控）")
+                else:
+                    log("页面正常加载，但验证码组件未加载。")
             browser.close()
     except Exception as e:
         log(f"自动抓取异常: {e}")
@@ -304,7 +313,7 @@ def solves(s, link, use_proxy=False, max_wait=180, log=lambda m: None, turnstile
 app = FastAPI()
 
 @app.get("/health")
-def health_check(): return {"status": "ok", "auto_token": "playwright"}
+def health_check(): return {"status": "ok", "auto_token": "playwright-xvfb"}
 
 @app.get("/delta")
 def delta(url: str = Query(...), token: str = Query(None)):

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import os, re, json, time, base64, hashlib, ssl, urllib.request, urllib.parse, urllib.error
+import os, re, json, time, base64, hashlib, ssl, random, urllib.request, urllib.parse, urllib.error
 from fastapi import FastAPI, Query
 from pydantic import BaseModel
 from typing import List
@@ -12,9 +12,15 @@ HDRS = {"Accept": "application/json", "Content-Type": "application/json",
 SSLCTX = ssl.create_default_context()
 SSLCTX.check_hostname = False
 SSLCTX.verify_mode = ssl.CERT_NONE
-GAP_MIN, GAP_MAX = 1.0, 30.0
+GAP_MIN, GAP_MAX = 3.0, 30.0
 COOLTOO_FAST = "you are finishing checkpoints too fast"
 POOL = os.environ.get("KEY_POOL", "/tmp/keys_pool.jsonl")
+
+SCREENS = ["390x844", "393x852", "428x926", "430x932"]
+CORES = [4, 6]
+LANGS = ["zh-CN", "zh-Hans-CN", "en-US"]
+TZS = ["Asia/Shanghai", "Asia/Hong_Kong", "Asia/Taipei"]
+CODECS = ["webgl2:ok", "webgl2:mali-g78", "webgl2:apple-gpu", "webgl1:ok"]
 
 
 def http(method, url, data=None, headers=None, timeout=25, form=False):
@@ -112,6 +118,36 @@ def ctr_hex(plain, ticket, off):
     return out.hex()
 
 
+def build_meta(ticket, fp=None):
+    fp = fp or {}
+    info = {
+        "ua": UA,
+        "screen": fp.get("screen") or random.choice(SCREENS),
+        "touch": True,
+        "lang": fp.get("lang") or random.choice(LANGS),
+        "tz": fp.get("tz") or random.choice(TZS),
+        "hardwareConcurrency": fp.get("cores") or random.choice(CORES),
+    }
+    payload = {"browserInfo": [info]}
+    return ctr_hex(json.dumps(payload, separators=(",", ":")), ticket, 0)
+
+
+def build_stream(ticket, fp=None):
+    fp = fp or {}
+    now = int(time.time() * 1000)
+    w, h = (fp.get("screen") or random.choice(SCREENS)).split("x")
+    cx, cy = int(w) // 2 + random.randint(-24, 24), int(h) // 2 + random.randint(-40, 40)
+    events = [
+        {"t": now - random.randint(3200, 4200), "type": "pointerdown", "x": cx, "y": cy},
+        {"t": now - random.randint(2900, 3100), "type": "pointerup", "x": cx, "y": cy},
+        {"t": now - random.randint(1800, 2400), "type": "pointerdown", "x": cx + random.randint(-8, 8), "y": cy + random.randint(-8, 8)},
+        {"t": now - random.randint(1500, 1750), "type": "pointerup", "x": cx + random.randint(-8, 8), "y": cy + random.randint(-8, 8)},
+        {"t": now - random.randint(700, 1100), "type": "checkpoint", "id": random.randint(1, 3)},
+    ]
+    payload = {"events": events, "codecProof": fp.get("codec") or random.choice(CODECS)}
+    return ctr_hex(json.dumps(payload, separators=(",", ":")), ticket, 1)
+
+
 def pick_d(url):
     try:
         r = urllib.parse.parse_qs(urllib.parse.urlparse(url).query).get("r", [""])[0]
@@ -127,6 +163,13 @@ def pick_d(url):
 class Session:
     def __init__(self, sid=None):
         self.sid = sid or (hashlib.md5(os.urandom(16)).hexdigest()[:8] + "%x" % int(time.time()))
+        self.fp = {
+            "screen": random.choice(SCREENS),
+            "lang": random.choice(LANGS),
+            "tz": random.choice(TZS),
+            "cores": random.choice(CORES),
+            "codec": random.choice(CODECS),
+        }
 
     def ts_config(self):
         return jload(http("GET", SITE + "/ts.php?t=%d" % int(time.time() * 1000),
@@ -162,8 +205,8 @@ class Session:
     def step(self, ticket, use_proxy=False):
         return self.call("PUT", "/api/session/step?ticket=%s&service=1" % ticket,
                          {"captcha": None,
-                          "meta": ctr_hex('{"browserInfo":[]}', ticket, 0),
-                          "stream": ctr_hex('{"events":[],"codecProof":null}', ticket, 1),
+                          "meta": build_meta(ticket, self.fp),
+                          "stream": build_stream(ticket, self.fp),
                           "resolved": True}, use_proxy)
 
     def status(self, ticket, use_proxy=False):
@@ -203,19 +246,20 @@ def probe_gap(s, ticket, use_proxy, log):
     round_ = 0
     while g <= GAP_MAX + 1e-9:
         round_ += 1
-        deadline = time.time() + g
+        wait = g * random.uniform(0.85, 1.45)
+        deadline = time.time() + wait
         while time.time() < deadline:
             time.sleep(min(0.05, max(0, deadline - time.time())))
         js = s.step(ticket, use_proxy)
         raw = json.dumps(js, ensure_ascii=False)
         if "rate-limited" in raw or "rate limit" in raw:
-            log("gap %.1fs 命中限流，退避 3s" % g)
+            log("wait %.2fs 命中限流，退避 3s" % wait)
             time.sleep(3)
             continue
         if COOLTOO_FAST in raw:
             g = round(g + 0.1, 1)
             continue
-        log("gap %.1fs 通过（第 %d 次）" % (g, round_))
+        log("wait %.2fs 通过（第 %d 次）" % (wait, round_))
         return js
     log("扫到 %.1fs 仍未通过" % GAP_MAX)
     return None

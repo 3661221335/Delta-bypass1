@@ -1,235 +1,72 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-# Delta Cardkey HTTP API
-# 启动: python server.py --port 2233
-
-import sys, os, time, asyncio, argparse, hashlib, threading, json
+import time
+import json
+import hashlib
+import threading
+import asyncio
 from concurrent.futures import ThreadPoolExecutor
-
-HERE = os.path.dirname(os.path.abspath(__file__))
-if HERE not in sys.path:
-    sys.path.insert(0, HERE)
-
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 import uvicorn
-try:
-    from fastapi.responses import ORJSONResponse as JSONResponse
-except Exception:
-    from fastapi.responses import JSONResponse
 
+# 这里导入 main.py 里面的核心解卡函数
 from main import solve_chain
+# 这里导入 auth_client.py 里的提取 ticket 函数
 from auth_client import extract_ticket, MIN_TICKET_LEN
-import auth_client as AUTH
 
-app = FastAPI(title="Delta Cardkey", default_response_class=JSONResponse)
+app = FastAPI(title="Delta Cardkey")
 executor = ThreadPoolExecutor(max_workers=10)
 lock = threading.Lock()
-
-# 缓存：同一 ticket 只求解一次，重复输入直接秒回
-CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".key_cache.json")
+CACHE_TTL = 24 * 3600
 key_cache = {}
-CACHE_TTL = 24 * 3600  #key 24h 内被消耗 缓存设为 24h
-cache_dirty = threading.Event()
-SAVE_DEBOUNCE = 2.0     # 最多每 2s 落盘一次
 
-
-def load_cache():
-    global key_cache
-    try:
-        if os.path.exists(CACHE_FILE):
-            with open(CACHE_FILE) as f:
-                data = json.load(f)
-            now = time.time()
-            key_cache = {h: v for h, v in data.items()
-                          if isinstance(v, dict) and now - v.get("ts", 0) < CACHE_TTL}
-    except Exception:
-        key_cache = {}
-
-
-def save_cache_now():
-    try:
-        with lock:
-            # 落盘前顺手把过期的清掉。
-            #
-            # 以前只在 cache_get 命中时删单条,没被查到的过期条目会一直留在文件里
-            # 越攒越多 —— 实测线上 1413 条里有 808 条（57%）早已过期。读的时候会跳过
-            # 它们所以不影响结果,但文件白白大一倍,看着也像有脏数据。
-            now = time.time()
-            for h in [h for h, v in key_cache.items()
-                      if now - v.get("ts", 0) >= CACHE_TTL]:
-                key_cache.pop(h, None)
-            snapshot = dict(key_cache)
-        tmp = CACHE_FILE + ".tmp"
-        with open(tmp, "w") as f:
-            json.dump(snapshot, f)
-        os.replace(tmp, CACHE_FILE)
-    except Exception:
-        pass
-
-
-def cache_writer_loop():
-    while True:
-        cache_dirty.wait()
-        time.sleep(SAVE_DEBOUNCE)
-        cache_dirty.clear()
-        save_cache_now()
-
-
-def cache_get(ticket, h=None):
-    h = h or hashlib.md5(ticket.encode()).hexdigest()
+def cache_get(ticket):
+    h = hashlib.md5(ticket.encode()).hexdigest()
     with lock:
         rec = key_cache.get(h)
-        if rec:
-            if time.time() - rec.get("ts", 0) < CACHE_TTL:
-                return rec.get("key"), True, rec.get("solve_time", 0.0)
-            key_cache.pop(h, None)
-    return None, False, 0.0
+        if rec and time.time() - rec.get("ts", 0) < CACHE_TTL:
+            return rec.get("key")
+    return None
 
-
-def cache_put(ticket, key, solve_time, h=None):
-    if not key:
-        return
-    h = h or hashlib.md5(ticket.encode()).hexdigest()
+def cache_put(ticket, key):
+    if not key: return
+    h = hashlib.md5(ticket.encode()).hexdigest()
     with lock:
-        key_cache[h] = {"key": key, "ts": time.time(), "solve_time": solve_time}
-    cache_dirty.set()      # 交给后台线程合并 不阻塞当前请求
-
-
-load_cache()
-threading.Thread(target=cache_writer_loop, daemon=True).start()
-
-MADE_BY = "Hasl_Team"
-QQ_GROUP = "277707901"
-inflight = {}              
-
-def fmt_t(secs):
-    return f"{round(float(secs or 0.0), 12)}s"
-
+        key_cache[h] = {"key": key, "ts": time.time()}
 
 def solo_pass(ticket):
-    t0 = time.time()
-    solved_timer = None
     try:
-        key, solved_timer = solve_chain(ticket, False, 3)
-        if key:
-            err = None
-        else:
-            reason = getattr(solved_timer, 'invalid_reason', None)
-            err = f"无效链接: {reason}" if reason else "solve failed"
+        # 调用 main.py 里的解卡流程
+        key, timer = solve_chain(ticket, False, 3)
+        return key, None
     except Exception as e:
-        key, err = None, f"solve exception: {type(e).__name__}"
-    if solved_timer is not None and solved_timer.total() > 0:
-        st = solved_timer.total()
-    else:
-        st = time.time() - t0
-    return key, err, st
-
-
-def run_solves(ticket):
-    key, err, st = solo_pass(ticket)
-    if key or err.startswith("solve exception"):
-        return key, err, st
-    if err.startswith("无效链接"):
-        return key, err, st
-    time.sleep(0.3)
-    return solo_pass(ticket)
-
+        return None, f"solve exception: {type(e).__name__} - {str(e)}"
 
 @app.get("/delta")
 async def delta(url: str):
     t0 = time.time()
-
     try:
         ticket = extract_ticket(url)
     except Exception:
-        return {"key": None, "error": "invalid url", "cached": False,
-                "made_by": MADE_BY, "qq_group": QQ_GROUP,
-                "times": fmt_t(time.time() - t0)}
-    # 长度不够的在这里就挡掉,别进求解流程。
-    #
-    # 求解一趟要 5 秒以上,而这种链接注定失败 —— 早点说清楚比让人等着强,顺带也省掉
-    # 一次没意义的自动重试和一个白烧的验证码 token。
-    if len(ticket) < MIN_TICKET_LEN:
-        return {"key": None, "error": "invalid url (no ticket)", "cached": False,
-                "made_by": MADE_BY, "qq_group": QQ_GROUP,
-                "times": fmt_t(time.time() - t0)}
+        return {"key": None, "error": "invalid url", "times": f"{round(time.time()-t0, 2)}s"}
 
-    h = hashlib.md5(ticket.encode()).hexdigest()
-    cached, found, cached_solve_time = cache_get(ticket, h)
-    if found:
-        return {"key": cached, "cached": True, "error": None,
-                "made_by": MADE_BY, "qq_group": QQ_GROUP,
-                "times": fmt_t(cached_solve_time)}
+    if len(ticket) < MIN_TICKET_LEN:
+        return {"key": None, "error": "invalid url (no ticket)", "times": f"{round(time.time()-t0, 2)}s"}
+
+    cached = cache_get(ticket)
+    if cached:
+        return {"key": cached, "cached": True, "error": None, "times": f"{round(time.time()-t0, 2)}s"}
 
     loop = asyncio.get_running_loop()
-    with lock:
-        fut = inflight.get(h)
-        if fut is None:
-            fut = loop.create_future()
-            inflight[h] = fut
-            spawn = True
-        else:
-            spawn = False
-    if spawn:
-        loop.create_task(drive(h, fut, ticket))
-
-    try:
-        key, err, solve_time = await asyncio.shield(fut)
-    except Exception as e:
-        key, err, solve_time = None, f"internal: {type(e).__name__}", time.time() - t0
-
-    return {"key": key, "cached": False,
-            "error": err,
-            "made_by": MADE_BY, "qq_group": QQ_GROUP,
-            "times": fmt_t(solve_time)}
-
-
-async def drive(h, fut, ticket):
-    try:
-        key, err, st = await asyncio.get_running_loop().run_in_executor(
-            executor, run_solves, ticket)
-    except Exception as e:
-        key, err, st = None, f"solve exception: {type(e).__name__}", 0.0
+    key, err = await loop.run_in_executor(executor, solo_pass, ticket)
+    
     if key:
-        cache_put(ticket, key, st, h)
-    with lock:
-        inflight.pop(h, None)
-    if not fut.done():
-        fut.set_result((key, err, st))
-
+        cache_put(ticket, key)
+        
+    return {
+        "key": key, 
+        "cached": False,
+        "error": err,
+        "times": f"{round(time.time()-t0, 2)}s"
+    }
 
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--port", "-p", type=int, default=2233)
-    ap.add_argument("--host", default="0.0.0.0")
-    ap.add_argument("--workers", "-w", type=int, default=10)
-    args = ap.parse_args()
-    # 后台盯上游客户端版本：启动刷一次，之后每小时一次。
-    # Watch the far end's client version in the background: once at startup,
-    # then hourly.
-    AUTH.start_version_watcher()
-    try:
-        import resource
-        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
-        want = min(hard, 65535)
-        if soft < want:
-            resource.setrlimit(resource.RLIMIT_NOFILE, (want, hard))
-            print(f"[server] fd limit {soft} -> {want}")
-    except Exception:
-        pass
-
-    executor = ThreadPoolExecutor(max_workers=args.workers,
-                                   thread_name_prefix="solve")
-    kw = {}
-    try:
-        import uvloop  # noqa: F401
-        kw['loop'] = 'uvloop'
-    except Exception:
-        pass
-    try:
-        import httptools  # noqa: F401
-        kw['http'] = 'httptools'
-    except Exception:
-        pass
-    uvicorn.run(app, host=args.host, port=args.port,
-                backlog=4096, access_log=False, **kw)
+    uvicorn.run(app, host="0.0.0.0", port=8000)

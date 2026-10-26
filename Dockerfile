@@ -1,8 +1,7 @@
 FROM python:3.10-slim
 
-# 安装编译 Go 语言的环境和系统依赖
 RUN apt-get update && apt-get install -y \
-    wget git unzip golang xvfb \
+    wget gnupg git unzip xvfb \
     libgl1 libglx-mesa0 libglu1-mesa libvulkan1 \
     libasound2 libatk-bridge2.0-0 libatk1.0-0 libcups2 libdbus-1-3 \
     libdrm2 libgbm1 libgtk-3-0 libnspr4 libnss3 libx11-xcb1 \
@@ -12,20 +11,23 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-# 下载并编译 Theyka 开源引擎
+# 直接克隆 Python 版求解器
 RUN git clone https://github.com/Theyka/Turnstile-Solver.git /app/solver
 WORKDIR /app/solver
-RUN go build -o /app/solver_bin main.go
 
-# 回到主目录，安装 Python 依赖
+# 安装 Python 依赖及 patchright 浏览器驱动
+RUN pip install --no-cache-dir -r requirements.txt
+RUN python -m patchright install chromium
+
+# 回到主目录，安装你的主程序依赖
 WORKDIR /app
 COPY . /app
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir fastapi uvicorn requests
 
 ENV DISPLAY=:99
 
-# 启动：拉起虚拟屏幕 -> 启动本地破解引擎(5000端口) -> 启动 B 站主程序(8000端口)
+# 启动：虚拟屏幕 -> 本地 API 服务 -> 你的 FastAPI 主程序
 CMD Xvfb :99 -screen 0 1920x1080x24 -ac +extension GLX +render -noreset & \
     export DISPLAY=:99 && \
-    /app/solver_bin & \
-    uvicorn main:app --host 0.0.0.0 --port 8000
+    cd /app/solver && python api_solver.py --headless false & \
+    cd /app && uvicorn main:app --host 0.0.0.0 --port 8000

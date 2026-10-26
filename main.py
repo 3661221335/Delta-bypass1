@@ -30,15 +30,8 @@ def bypass_with_code(url: str):
         return {"success": False, "error": "invalid url (no ticket)", "source": "Code"}
 
     step_url = f"{PLATOBOOST_HOST}/api/session/step?ticket={ticket}&service=1"
-    
     try:
-        payload = {
-            "captcha": None,
-            "meta": "",
-            "stream": "",
-            "resolved": True
-        }
-        
+        payload = {"captcha": None, "meta": "", "stream": "", "resolved": True}
         r = requests.put(step_url, headers=HEADERS, json=payload, timeout=15)
         res_json = r.json()
 
@@ -54,24 +47,19 @@ def bypass_with_code(url: str):
         new_url = data.get("url")
         if new_url and new_url != "about:blank":
             new_ticket = extract_ticket(new_url)
-            if new_ticket:
-                ticket = new_ticket
+            if new_ticket: ticket = new_ticket
 
         status_url = f"{PLATOBOOST_HOST}/api/session/status?ticket={ticket}"
         for _ in range(10):
             time.sleep(1.2)
             sr = requests.get(status_url, headers=HEADERS, timeout=10)
             sres = sr.json()
-            
             key = (sres.get("data") or {}).get("key")
             if key and key != "KEY_NOT_FOUND":
                 return {"success": True, "key": key, "source": "Code"}
-            
             if "expired" in str(sres):
                 return {"success": False, "error": "expired", "source": "Code"}
-
         return {"success": False, "error": "not issued (timeout)", "source": "Code"}
-
     except requests.exceptions.Timeout:
         return {"success": False, "error": "network timeout", "source": "Code"}
     except Exception as e:
@@ -83,15 +71,8 @@ def bypass_with_token(url: str, token: str):
         return {"success": False, "error": "invalid url (no ticket)", "source": "Token"}
 
     step_url = f"{PLATOBOOST_HOST}/api/session/step?ticket={ticket}&service=1"
-    
     try:
-        payload = {
-            "captcha": token,
-            "meta": "",
-            "stream": "",
-            "resolved": True
-        }
-        
+        payload = {"captcha": token, "meta": "", "stream": "", "resolved": True}
         r = requests.put(step_url, headers=HEADERS, json=payload, timeout=15)
         res_json = r.json()
 
@@ -105,24 +86,19 @@ def bypass_with_token(url: str, token: str):
         new_url = data.get("url")
         if new_url and new_url != "about:blank":
             new_ticket = extract_ticket(new_url)
-            if new_ticket:
-                ticket = new_ticket
+            if new_ticket: ticket = new_ticket
 
         status_url = f"{PLATOBOOST_HOST}/api/session/status?ticket={ticket}"
         for _ in range(10):
             time.sleep(1.2)
             sr = requests.get(status_url, headers=HEADERS, timeout=10)
             sres = sr.json()
-            
             key = (sres.get("data") or {}).get("key")
             if key and key != "KEY_NOT_FOUND":
                 return {"success": True, "key": key, "source": "Token"}
-            
             if "expired" in str(sres):
                 return {"success": False, "error": "expired", "source": "Token"}
-
         return {"success": False, "error": "not issued (timeout)", "source": "Token"}
-
     except Exception as e:
         return {"success": False, "error": f"exception: {str(e)}", "source": "Token"}
 
@@ -142,7 +118,4 @@ def delta(url: str = Query(...), token: str = Query(None)):
             return {"key": token_result["key"], "error": None, "source": "Token"}
         return {"key": None, "error": token_result.get("error"), "source": "Token"}
 
-    return {
-        "key": None,
-        "error": f"Code failed ({code_result.get('error')}), try adding &token=xxx"
-    }
+    return {"key": None, "error": f"Code failed ({code_result.get('error')}), try adding &token=xxx"}

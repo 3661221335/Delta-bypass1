@@ -1,7 +1,7 @@
 FROM python:3.10-slim
 
 RUN apt-get update && apt-get install -y \
-    wget gnupg git unzip \
+    wget gnupg git unzip xvfb \
     libgl1 libglx-mesa0 libglu1-mesa libvulkan1 \
     libasound2 libatk-bridge2.0-0 libatk1.0-0 libcups2 libdbus-1-3 \
     libdrm2 libgbm1 libgtk-3-0 libnspr4 libnss3 libx11-xcb1 \
@@ -15,4 +15,7 @@ COPY . /app
 RUN pip install --no-cache-dir -r requirements.txt
 RUN playwright install chromium
 
-CMD uvicorn main:app --host 0.0.0.0 --port 8000
+ENV DISPLAY=:99
+
+CMD Xvfb :99 -screen 0 1920x1080x24 -ac +extension GLX +render -noreset & \
+    uvicorn main:app --host 0.0.0.0 --port 8000

@@ -1,5 +1,2 @@
 fastapi
-uvicorn[standard]
-requests
-urllib3
-pycryptodome
+uvicorn

@@ -35,7 +35,7 @@ def solo_pass(ticket):
         key, timer = solve_chain(ticket, False, 3)
         return key, None
     except Exception as e:
-        return None, f"内部代码异常: {type(e).__name__} - {str(e)}"
+        return None, f"内部代码异常: {type(e).__name__}"
 
 @app.get("/delta")
 async def delta(url: str):
@@ -43,7 +43,7 @@ async def delta(url: str):
     try:
         ticket = extract_ticket(url)
     except Exception:
-        return {"key": None, "error": "无效链接(未提取到d参数)", "times": f"{round(time.time()-t0, 2)}s"}
+        return {"key": None, "error": "无效链接(未找到d)", "times": f"{round(time.time()-t0, 2)}s"}
 
     if len(ticket) < MIN_TICKET_LEN:
         return {"key": None, "error": "无效链接(长度不足)", "times": f"{round(time.time()-t0, 2)}s"}
@@ -58,7 +58,6 @@ async def delta(url: str):
     if key:
         cache_put(ticket, key)
         
-    # 统一返回格式，拦截所有报错，保证前端不崩溃
     return {
         "key": key, 
         "cached": False,

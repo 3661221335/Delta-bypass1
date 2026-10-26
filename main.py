@@ -1,121 +1,113 @@
 import time
 import json
-import re
-import requests
+import urllib.parse
+import urllib.request
+import urllib.error
 from fastapi import FastAPI, Query
+from playwright.sync_api import sync_playwright
 
 app = FastAPI()
 
-PLATOBOOST_HOST = "https://auth.platorelay.com"
-CLIENT_VERSION = "8.2.1"
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "application/json",
+SITE = "https://izen.lol"
+SITEKEY = "0x4AAAAAADNEi_2N24gpQqY0"
+UA = ("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+      "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1")
+HDRS = {
     "Content-Type": "application/json",
-    "X-Client-Name": "platoboost webclient",
-    "X-Client-Version": CLIENT_VERSION
+    "Origin": SITE,
+    "Referer": SITE + "/",
+    "User-Agent": UA,
 }
 
-def extract_ticket(url: str) -> str:
-    m = re.search(r"[?&]d=([A-Za-z0-9_\-]+)", url or "")
-    if not m:
-        m = re.search(r"([A-Za-z0-9_\-]{33,})", url or "")
-    if not m:
-        return ""
-    return m.group(1)
+JS_RENDER = """
+async () => {
+  await new Promise(res => {
+    if (window.turnstile) return res();
+    const s = document.createElement('script');
+    s.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';
+    s.onload = res;
+    document.head.appendChild(s);
+  });
+  const d = document.createElement('div');
+  d.id = 'tsbox';
+  document.body.appendChild(d);
+  return await new Promise(res => {
+    turnstile.render('#tsbox', {
+      sitekey: '%s',
+      callback: t => res(t),
+      'error-callback': e => res('ERR:' + e)
+    });
+  });
+}
+""" % SITEKEY
 
-def bypass_with_code(url: str):
-    ticket = extract_ticket(url)
-    if not ticket or len(ticket) < 33:
-        return {"success": False, "error": "invalid url (no ticket)", "source": "Code"}
-
-    step_url = f"{PLATOBOOST_HOST}/api/session/step?ticket={ticket}&service=1"
+def get_token(headless=True, timeout=60000):
     try:
-        payload = {"captcha": None, "meta": "", "stream": "", "resolved": True}
-        r = requests.put(step_url, headers=HEADERS, json=payload, timeout=15)
-        res_json = r.json()
-
-        if not res_json.get("success"):
-            msg = str(res_json.get("message", ""))
-            if "expired" in msg or "invalid" in msg:
-                return {"success": False, "error": "expired", "source": "Code"}
-            if "account-unlock-required" in msg:
-                return {"success": False, "error": "account-unlock-required", "source": "Code"}
-            return {"success": False, "error": f"step failed: {msg}", "source": "Code"}
-
-        data = res_json.get("data") or {}
-        new_url = data.get("url")
-        if new_url and new_url != "about:blank":
-            new_ticket = extract_ticket(new_url)
-            if new_ticket: ticket = new_ticket
-
-        status_url = f"{PLATOBOOST_HOST}/api/session/status?ticket={ticket}"
-        for _ in range(10):
-            time.sleep(1.2)
-            sr = requests.get(status_url, headers=HEADERS, timeout=10)
-            sres = sr.json()
-            key = (sres.get("data") or {}).get("key")
-            if key and key != "KEY_NOT_FOUND":
-                return {"success": True, "key": key, "source": "Code"}
-            if "expired" in str(sres):
-                return {"success": False, "error": "expired", "source": "Code"}
-        return {"success": False, "error": "not issued (timeout)", "source": "Code"}
-    except requests.exceptions.Timeout:
-        return {"success": False, "error": "network timeout", "source": "Code"}
+        with sync_playwright() as p:
+            b = p.chromium.launch(headless=headless, timeout=timeout, args=[
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--disable-background-networking",
+            ])
+            ctx = b.new_context(
+                user_agent=UA,
+                viewport={"width": 390, "height": 844},
+                device_scale_factor=3,
+                has_touch=True,
+                is_mobile=True,
+                locale="en-US",
+                timezone_id="Asia/Shanghai",
+            )
+            ctx.add_init_script(
+                "Object.defineProperty(navigator,'webdriver',{get:()=>undefined});"
+                "Object.defineProperty(navigator,'maxTouchPoints',{get:()=>5});"
+            )
+            pg = ctx.new_page()
+            pg.goto(SITE, wait_until="domcontentloaded", timeout=timeout)
+            pg.wait_for_timeout(1500)
+            tok = pg.evaluate(JS_RENDER)
+            b.close()
+        tok = str(tok or "")
+        if not tok or tok.startswith("ERR:"):
+            return None
+        return tok
     except Exception as e:
-        return {"success": False, "error": f"exception: {str(e)}", "source": "Code"}
+        print("Playwright Error:", str(e))
+        return None
 
-def bypass_with_token(url: str, token: str):
-    ticket = extract_ticket(url)
-    if not ticket or len(ticket) < 33:
-        return {"success": False, "error": "invalid url (no ticket)", "source": "Token"}
-
-    step_url = f"{PLATOBOOST_HOST}/api/session/step?ticket={ticket}&service=1"
+def bypass_captcha(url, token, timeout=45):
+    body = json.dumps({"url": url, "captchaToken": token}).encode()
+    req = urllib.request.Request(SITE + "/api/bypass", data=body, headers=HDRS, method="POST")
+    t0 = time.time()
     try:
-        payload = {"captcha": token, "meta": "", "stream": "", "resolved": True}
-        r = requests.put(step_url, headers=HEADERS, json=payload, timeout=15)
-        res_json = r.json()
-
-        if not res_json.get("success"):
-            msg = str(res_json.get("message", ""))
-            if "account-unlock-required" in msg:
-                return {"success": False, "error": "token invalid or ip blocked", "source": "Token"}
-            return {"success": False, "error": f"step failed: {msg}", "source": "Token"}
-
-        data = res_json.get("data") or {}
-        new_url = data.get("url")
-        if new_url and new_url != "about:blank":
-            new_ticket = extract_ticket(new_url)
-            if new_ticket: ticket = new_ticket
-
-        status_url = f"{PLATOBOOST_HOST}/api/session/status?ticket={ticket}"
-        for _ in range(10):
-            time.sleep(1.2)
-            sr = requests.get(status_url, headers=HEADERS, timeout=10)
-            sres = sr.json()
-            key = (sres.get("data") or {}).get("key")
-            if key and key != "KEY_NOT_FOUND":
-                return {"success": True, "key": key, "source": "Token"}
-            if "expired" in str(sres):
-                return {"success": False, "error": "expired", "source": "Token"}
-        return {"success": False, "error": "not issued (timeout)", "source": "Token"}
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return {"success": True, "data": json.loads(r.read()), "cost": round(time.time() - t0, 2)}
+    except urllib.error.HTTPError as e:
+        return {"success": False, "error": e.read().decode("utf-8", "ignore")[:400], "cost": round(time.time() - t0, 2)}
     except Exception as e:
-        return {"success": False, "error": f"exception: {str(e)}", "source": "Token"}
+        return {"success": False, "error": str(e), "cost": round(time.time() - t0, 2)}
 
 @app.get("/health")
 def health():
     return {"status": "ok"}
 
 @app.get("/delta")
-def delta(url: str = Query(...), token: str = Query(None)):
-    code_result = bypass_with_code(url)
-    if code_result.get("success"):
-        return {"key": code_result["key"], "error": None, "source": "Code"}
-
-    if token:
-        token_result = bypass_with_token(url, token)
-        if token_result.get("success"):
-            return {"key": token_result["key"], "error": None, "source": "Token"}
-        return {"key": None, "error": token_result.get("error"), "source": "Token"}
-
-    return {"key": None, "error": f"Code failed ({code_result.get('error')}), try adding &token=xxx"}
+def delta(url: str = Query(...)):
+    # 1. 启动浏览器获取 Token
+    token = get_token()
+    if not token:
+        return {"key": None, "error": "Playwright获取Token失败(可能被风控)", "source": "izen"}
+    
+    # 2. 带着 Token 请求 izen 的破解接口
+    res = bypass_captcha(url, token)
+    if not res.get("success"):
+        return {"key": None, "error": res.get("error"), "source": "izen"}
+    
+    # 3. 解析返回的数据
+    data = res.get("data", {})
+    if data.get("success") and data.get("key"):
+        return {"key": data["key"], "error": None, "source": "izen"}
+    else:
+        return {"key": None, "error": data.get("error", "izen解析失败"), "source": "izen"}

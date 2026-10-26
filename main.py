@@ -171,6 +171,10 @@ class Session:
             "codec": random.choice(CODECS),
         }
 
+    def fp_sig(self):
+        w, h = self.fp["screen"].split("x")
+        return "%s,%s,%d,5,%d,Apple GPU" % (w, h, self.fp["cores"], self.fp["cores"])
+
     def ts_config(self):
         return jload(http("GET", SITE + "/ts.php?t=%d" % int(time.time() * 1000),
                           headers={"Referer": SITE + "/"}))
@@ -183,7 +187,9 @@ class Session:
         return jload(http("GET", SITE + "/stats.php?act=ts&token=" + urllib.parse.quote(token) +
                           "&sid=" + urllib.parse.quote(self.sid), headers={"Referer": SITE + "/"}))
 
-    def helpreq(self, ft, sig):
+    def helpreq(self, ft, sig=None):
+        if sig is None:
+            sig = self.fp_sig()
         return jload(http("GET", SITE + "/stats.php?act=helpreq&sid=" + urllib.parse.quote(self.sid) +
                           "&ft=" + urllib.parse.quote(ft) + "&sig=" + urllib.parse.quote(sig),
                           headers={"Referer": SITE + "/"}))
@@ -273,6 +279,19 @@ def store_key(key, mins=0):
         pass
 
 
+def try_helpreq(s, ft, log, L, attempts=3):
+    for i in range(attempts):
+        h = s.helpreq(ft)
+        log("helpreq#%d sid=%s -> %s" % (i + 1, s.sid, json.dumps(h, ensure_ascii=False)))
+        if h.get("allow") or h.get("private"):
+            return True, h, s
+        if i < attempts - 1:
+            time.sleep(random.uniform(2.0, 3.5))
+            s = Session()
+            log("换新 sid：%s" % s.sid)
+    return False, h, s
+
+
 def solves(s, link, use_proxy=False, max_wait=180, log=lambda m: None, turnstile_token=None):
     m = re.search(r"[?&]d=([A-Za-z0-9_\-]+)", link or "")
     ticket = m.group(1) if m else (link or "").strip()
@@ -325,9 +344,8 @@ def solves(s, link, use_proxy=False, max_wait=180, log=lambda m: None, turnstile
     L("PUT#1 -> %s" % json.dumps(js, ensure_ascii=False)[:200])
     rj = reject(js)
     if rj and rj.get("tag") == "need_verify" and not use_proxy:
-        h = s.helpreq(ft, "390,844,3,5,4,Apple GPU")
-        L("申请同源代理：%s" % json.dumps(h, ensure_ascii=False)[:160])
-        if h.get("allow") or h.get("private"):
+        ok, h, s = try_helpreq(s, ft, log, L, attempts=3)
+        if ok:
             use_proxy = True
             out["proxy"] = True
             js = s.step(ticket, use_proxy)
@@ -335,7 +353,8 @@ def solves(s, link, use_proxy=False, max_wait=180, log=lambda m: None, turnstile
             rj = reject(js)
         else:
             out["stage"] = "ip_flagged"
-            out["message"] = h.get("msg") or "出口 IP 被平台标记，代理额度不可用"
+            out["message"] = "出口 IP 被平台标记，3 次 helpreq 均未放行：%s" % (
+                json.dumps(h, ensure_ascii=False) if h else "no_response")
             L(out["message"])
             return out
     if rj and not rj.get("soft"):
@@ -418,8 +437,8 @@ def delta(url: str = Query(...)):
         s = Session()
         data = solves(s, url, max_wait=180)
         if data.get("success"):
-            return {"key": data.get("key"), "error": None, "stage": data.get("stage")}
-        return {"key": None, "error": data.get("stage"), "message": data.get("message")}
+            return {"key": data.get("key"), "error": None, "stage": data.get("stage"), "sid": s.sid, "log": data.get("log", [])}
+        return {"key": None, "error": data.get("stage"), "message": data.get("message"), "sid": s.sid, "log": data.get("log", [])}
     except Exception as e:
         return {"key": None, "error": "exception", "message": "%s - %s" % (type(e).__name__, e)}
 

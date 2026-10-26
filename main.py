@@ -2,15 +2,8 @@ import os, re, json, time, base64, hashlib, ssl, random, urllib.request, urllib.
 from fastapi import FastAPI, Query
 from pydantic import BaseModel
 from typing import List
-from playwright.sync_api import sync_playwright
 
-PROXY_CONFIG = {
-    "server": "http://global.lycheeip.com:10000",
-    "username": "PR3QPWg8NP6-zone-custom-region-US-st-WestVirginia",
-    "password": "2c39c20068fb"
-}
-
-SITE = "https://auth.platorelay.com"
+SITE = "https://ninjak.dpdns.org"
 HOST = "https://auth.platorelay.com"
 UA = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
 HDRS = {"Accept": "application/json", "Content-Type": "application/json", "X-Client-Name": "platoboost webclient", "X-Client-Version": "8.2.1"}
@@ -41,12 +34,8 @@ def http(method, url, data=None, headers=None, timeout=25, form=False):
             body = json.dumps(data).encode()
             h.setdefault("Content-Type", "application/json")
     req = urllib.request.Request(url, data=body, headers=h, method=method)
-    proxy_url = f"http://{PROXY_CONFIG['username']}:{PROXY_CONFIG['password']}@{PROXY_CONFIG['server'].replace('http://', '')}"
-    proxy_handler = urllib.request.ProxyHandler({'http': proxy_url, 'https': proxy_url})
-    opener = urllib.request.build_opener(proxy_handler)
-
     try:
-        with opener.open(req, timeout=timeout) as r:
+        with urllib.request.urlopen(req, timeout=timeout, context=SSLCTX) as r:
             return r.read().decode("utf-8", "ignore")
     except urllib.error.HTTPError as e:
         return e.read().decode("utf-8", "ignore")
@@ -135,48 +124,6 @@ def pick_d(url):
         return m.group(1) if m else None
     except Exception: return None
 
-def get_turnstile_token(log=lambda m: None):
-    log("启动 Playwright，自己构造本地页面提取 Token（已挂载代理）...")
-    token = None
-    try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=False, proxy=PROXY_CONFIG, args=[
-                "--no-sandbox", 
-                "--disable-blink-features=AutomationControlled",
-                "--disable-dev-shm-usage",
-                "--window-size=1920,1080"
-            ])
-            context = browser.new_context(user_agent=UA)
-            page = context.new_page()
-            
-            # 关键点：这里不请求 ninjak，而是直接加载本地构造的 HTML 去要 Token
-            html_content = """
-            <!DOCTYPE html>
-            <html>
-            <head><script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script></head>
-            <body>
-                <div class="cf-turnstile" data-sitekey="0x4AAAAAAFT_fRNIBSxl5V8M"></div>
-            </body>
-            </html>
-            """
-            page.set_content(html_content, timeout=60000)
-            log("本地页面构造完毕，正在等待 Turnstile 响应...")
-            
-            for _ in range(25):
-                token = page.evaluate('document.querySelector(\'[name="cf-turnstile-response"]\')?.value')
-                if token and len(token) > 20:
-                    log(f"成功自动抓取到 Token（长度 {len(token)}）")
-                    break
-                time.sleep(1)
-            
-            if not token:
-                log("抓取失败：验证码组件未加载。")
-            browser.close()
-    except Exception as e:
-        log(f"自动抓取异常: {e}")
-        
-    return (token, None) if token else (None, "no_token")
-
 class Session:
     def __init__(self, sid=None):
         self.sid = sid or (hashlib.md5(os.urandom(16)).hexdigest()[:8] + "%x" % int(time.time()))
@@ -245,7 +192,7 @@ def try_helpreq(s, ft, log, attempts=3):
             s = Session()
     return False, h, s
 
-def solves(s, link, use_proxy=False, max_wait=180, log=lambda m: None, turnstile_token=None, auto_token=True):
+def solves(s, link, use_proxy=False, max_wait=180, log=lambda m: None, turnstile_token=None):
     m = re.search(r"[?&]d=([A-Za-z0-9_\-]+)", link or "")
     ticket = m.group(1) if m else (link or "").strip()
     out = {"success": False, "ticket": ticket, "key": None, "minutes_left": 0, "proxy": use_proxy, "stage": "init", "message": "", "log": []}
@@ -259,14 +206,6 @@ def solves(s, link, use_proxy=False, max_wait=180, log=lambda m: None, turnstile
     ct = None
     
     if ts_on:
-        if not turnstile_token and auto_token:
-            tok, err = get_turnstile_token(L)
-            if tok: turnstile_token = tok
-            else: 
-                out["stage"] = "need_turnstile"
-                out["message"] = "自动抓取 Token 失败"
-                return out
-                
         if turnstile_token:
             st = s.ts_verify(turnstile_token)
             if st.get("ok"): ct = st.get("claim")
@@ -276,6 +215,7 @@ def solves(s, link, use_proxy=False, max_wait=180, log=lambda m: None, turnstile
                 return out
         else:
             out["stage"] = "need_turnstile"
+            out["message"] = "无 Turnstile token，无法通过 siteverify"
             return out
             
     g = s.gate()
@@ -329,13 +269,13 @@ def solves(s, link, use_proxy=False, max_wait=180, log=lambda m: None, turnstile
 app = FastAPI()
 
 @app.get("/health")
-def health_check(): return {"status": "ok", "mode": "pure_local_playwright"}
+def health_check(): return {"status": "ok"}
 
 @app.get("/delta")
 def delta(url: str = Query(...), token: str = Query(None)):
     try:
         s = Session()
-        data = solves(s, url, max_wait=180, turnstile_token=token, auto_token=True)
+        data = solves(s, url, max_wait=180, turnstile_token=token)
         return data
     except Exception as e:
         return {"key": None, "error": "exception", "message": str(e)}

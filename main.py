@@ -4,19 +4,11 @@ from pydantic import BaseModel
 from typing import List
 from playwright.sync_api import sync_playwright
 
-PROXY_CONFIG = {
-    "server": "http://global.lycheeip.com:10000",
-    "username": "PR3QPWg8NP6-zone-custom-region-US-st-WestVirginia",
-    "password": "2c39c20068fb"
-}
-
 HOST = "https://auth.platorelay.com"
 UA = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
 SSLCTX = ssl.create_default_context()
 SSLCTX.check_hostname = False
 SSLCTX.verify_mode = ssl.CERT_NONE
-GAP_MIN, GAP_MAX = 3.0, 30.0
-COOLTOO_FAST = "you are finishing checkpoints too fast"
 POOL = os.environ.get("KEY_POOL", "/tmp/keys_pool.jsonl")
 
 SCREENS = ["390x844", "393x852", "428x926", "430x932"]
@@ -48,13 +40,8 @@ def http(method, url, data=None, timeout=25):
     }
     body = json.dumps(data).encode() if data else None
     req = urllib.request.Request(url, data=body, headers=h, method=method)
-    
-    proxy_url = f"http://{PROXY_CONFIG['username']}:{PROXY_CONFIG['password']}@{PROXY_CONFIG['server'].replace('http://', '')}"
-    proxy_handler = urllib.request.ProxyHandler({'http': proxy_url, 'https': proxy_url})
-    opener = urllib.request.build_opener(proxy_handler)
-
     try:
-        with opener.open(req, timeout=timeout) as r:
+        with urllib.request.urlopen(req, timeout=timeout, context=SSLCTX) as r:
             return r.read().decode("utf-8", "ignore")
     except urllib.error.HTTPError as e:
         return e.read().decode("utf-8", "ignore")
@@ -148,7 +135,7 @@ def get_turnstile_token(log):
     token = None
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=False, proxy=PROXY_CONFIG, args=[
+            browser = p.chromium.launch(headless=False, args=[
                 "--no-sandbox", 
                 "--disable-blink-features=AutomationControlled",
                 "--disable-dev-shm-usage",
@@ -173,6 +160,14 @@ def get_turnstile_token(log):
                     log(f"成功抓取到 Token（长度 {len(token)}）")
                     break
                 time.sleep(1)
+            
+            if not token:
+                content = page.content()
+                if "Cloudflare" in content or "Just a moment" in content:
+                    log("报错：被 Cloudflare 拦截，机房 IP 风控")
+                else:
+                    log("报错：验证码组件未加载")
+            
             browser.close()
     except Exception as e:
         log(f"自动抓取异常: {e}")

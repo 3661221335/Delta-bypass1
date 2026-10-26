@@ -338,7 +338,11 @@ def delta(url: str = Query(...)):
         data = solve_delta(url)
         if data.get("ok"):
             return {"key": data.get("key", ""), "error": None}
-        return {"key": None, "error": str(data.get("error", "solve failed"))}
+        return {
+            "key": None, 
+            "error": str(data.get("error", "solve failed")),
+            "message": str(data.get("message", ""))
+        }
     except Exception as e:
         return {"key": None, "error": f"solve exception: {type(e).__name__} - {str(e)}"}
 

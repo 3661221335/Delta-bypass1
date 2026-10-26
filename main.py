@@ -3,7 +3,7 @@ from fastapi import FastAPI, Query
 from pydantic import BaseModel
 from typing import List
 
-EZSOLVER_HOST = "deta-production-fe5a.up.railway.app"
+EZSOLVER_HOST = "deta-production-ca90.up.railway.app"
 
 SITE = "https://ninjak.dpdns.org"
 HOST = "https://auth.platorelay.com"

@@ -2,11 +2,16 @@ import os, re, json, time, base64, hashlib, ssl, random, urllib.request, urllib.
 from fastapi import FastAPI, Query
 from pydantic import BaseModel
 from typing import List
+from playwright.sync_api import sync_playwright
 
-SITE = "https://ninjak.dpdns.org"
+PROXY_CONFIG = {
+    "server": "http://global.lycheeip.com:10000",
+    "username": "PR3QPWg8NP6-zone-custom-region-US-st-WestVirginia",
+    "password": "2c39c20068fb"
+}
+
 HOST = "https://auth.platorelay.com"
 UA = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
-HDRS = {"Accept": "application/json", "Content-Type": "application/json", "X-Client-Name": "platoboost webclient", "X-Client-Version": "8.2.1"}
 SSLCTX = ssl.create_default_context()
 SSLCTX.check_hostname = False
 SSLCTX.verify_mode = ssl.CERT_NONE
@@ -20,22 +25,36 @@ LANGS = ["zh-CN", "zh-Hans-CN", "en-US"]
 TZS = ["Asia/Shanghai", "Asia/Hong_Kong", "Asia/Taipei"]
 CODECS = ["webgl2:ok", "webgl2:mali-g78", "webgl2:apple-gpu", "webgl1:ok"]
 
-def http(method, url, data=None, headers=None, timeout=25, form=False):
-    h = {"User-Agent": UA}
-    if headers: h.update(headers)
-    body = None
-    if data is not None:
-        if form:
-            body = urllib.parse.urlencode(data).encode()
-            h["Content-Type"] = "application/x-www-form-urlencoded"
-        elif isinstance(data, (bytes, str)):
-            body = data.encode() if isinstance(data, str) else data
-        else:
-            body = json.dumps(data).encode()
-            h.setdefault("Content-Type", "application/json")
-    req = urllib.request.Request(url, data=body, headers=h, method=method)
+def get_latest_version():
     try:
-        with urllib.request.urlopen(req, timeout=timeout, context=SSLCTX) as r:
+        req = urllib.request.Request(HOST, headers={"User-Agent": UA})
+        with urllib.request.urlopen(req, timeout=10, context=SSLCTX) as r:
+            html = r.read().decode("utf-8", "ignore")
+            m = re.search(r'v?(\d+\.\d+\.\d+)', html)
+            if m: return m.group(1)
+    except Exception:
+        pass
+    return "8.2.4"
+
+def http(method, url, data=None, timeout=25):
+    h = {
+        "User-Agent": UA,
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "X-Client-Name": "platoboost webclient",
+        "X-Client-Version": get_latest_version(),
+        "Origin": "https://auth.platorelay.com",
+        "Referer": "https://auth.platorelay.com/"
+    }
+    body = json.dumps(data).encode() if data else None
+    req = urllib.request.Request(url, data=body, headers=h, method=method)
+    
+    proxy_url = f"http://{PROXY_CONFIG['username']}:{PROXY_CONFIG['password']}@{PROXY_CONFIG['server'].replace('http://', '')}"
+    proxy_handler = urllib.request.ProxyHandler({'http': proxy_url, 'https': proxy_url})
+    opener = urllib.request.build_opener(proxy_handler)
+
+    try:
+        with opener.open(req, timeout=timeout) as r:
             return r.read().decode("utf-8", "ignore")
     except urllib.error.HTTPError as e:
         return e.read().decode("utf-8", "ignore")
@@ -124,152 +143,126 @@ def pick_d(url):
         return m.group(1) if m else None
     except Exception: return None
 
+def get_turnstile_token(log):
+    log("启动 Playwright 完全自研提取 Token...")
+    token = None
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=False, proxy=PROXY_CONFIG, args=[
+                "--no-sandbox", 
+                "--disable-blink-features=AutomationControlled",
+                "--disable-dev-shm-usage",
+                "--window-size=1920,1080"
+            ])
+            context = browser.new_context(user_agent=UA)
+            page = context.new_page()
+            
+            html_content = """
+            <!DOCTYPE html>
+            <html>
+            <head><script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script></head>
+            <body><div class="cf-turnstile" data-sitekey="0x4AAAAAAFT_fRNIBSxl5V8M"></div></body>
+            </html>
+            """
+            page.set_content(html_content, timeout=60000)
+            log("本地页面已生成，等待 Turnstile...")
+            
+            for _ in range(25):
+                token = page.evaluate('document.querySelector(\'[name="cf-turnstile-response"]\')?.value')
+                if token and len(token) > 20:
+                    log(f"成功抓取到 Token（长度 {len(token)}）")
+                    break
+                time.sleep(1)
+            browser.close()
+    except Exception as e:
+        log(f"自动抓取异常: {e}")
+    return token
+
 class Session:
     def __init__(self, sid=None):
         self.sid = sid or (hashlib.md5(os.urandom(16)).hexdigest()[:8] + "%x" % int(time.time()))
         self.fp = {"screen": random.choice(SCREENS), "lang": random.choice(LANGS), "tz": random.choice(TZS), "cores": random.choice(CORES), "codec": random.choice(CODECS)}
-    def fp_sig(self):
-        w, h = self.fp["screen"].split("x")
-        return "%s,%s,%d,5,%d,Apple GPU" % (w, h, self.fp["cores"], self.fp["cores"])
-    def ts_config(self): return jload(http("GET", SITE + "/ts.php?t=%d" % int(time.time() * 1000), headers={"Referer": SITE + "/"}))
-    def gate(self): return jload(http("GET", SITE + "/stats.php?act=gate&sid=" + urllib.parse.quote(self.sid), headers={"Referer": SITE + "/"}))
-    def ts_verify(self, token): return jload(http("GET", SITE + "/stats.php?act=ts&token=" + urllib.parse.quote(token) + "&sid=" + urllib.parse.quote(self.sid), headers={"Referer": SITE + "/"}))
-    def helpreq(self, ft, sig=None):
-        if sig is None: sig = self.fp_sig()
-        return jload(http("GET", SITE + "/stats.php?act=helpreq&sid=" + urllib.parse.quote(self.sid) + "&ft=" + urllib.parse.quote(ft) + "&sig=" + urllib.parse.quote(sig), headers={"Referer": SITE + "/"}))
-    def claim(self, key, ct, ft=""):
-        return jload(http("GET", SITE + "/stats.php?act=claim&key=" + urllib.parse.quote(key) + "&sid=" + urllib.parse.quote(self.sid) + "&ct=" + urllib.parse.quote(ct) + ("&ft=" + urllib.parse.quote(ft) if ft else ""), headers={"Referer": SITE + "/"}))
-    def call(self, method, path, body=None, use_proxy=False):
-        if use_proxy:
-            return jload(http("POST", SITE + "/proxy.php", {"method": method, "path": path, "body": body}, headers={"Referer": SITE + "/", "Origin": SITE}))
-        return jload(http(method, HOST + path, None if body is None else body, headers=HDRS))
-    def step(self, ticket, use_proxy=False):
-        return self.call("PUT", "/api/session/step?ticket=%s&service=1" % ticket, {"captcha": None, "meta": build_meta(ticket, self.fp), "stream": build_stream(ticket, self.fp), "resolved": True}, use_proxy)
-    def status(self, ticket, use_proxy=False): return self.call("GET", "/api/session/status?ticket=%s" % ticket, None, use_proxy)
-    def metadata(self, ticket, use_proxy=False): return self.call("GET", "/api/session/metadata?ticket=%s" % ticket, None, use_proxy)
+    def call(self, method, path, body=None):
+        return jload(http(method, HOST + path, body))
+    def step(self, ticket, captcha_token=None):
+        return self.call("PUT", "/api/session/step?ticket=%s&service=1" % ticket, {
+            "captcha": captcha_token, 
+            "meta": build_meta(ticket, self.fp), 
+            "stream": build_stream(ticket, self.fp), 
+            "resolved": True
+        })
+    def status(self, ticket): return self.call("GET", "/api/session/status?ticket=%s" % ticket)
 
 def reject(js):
     if isinstance(js, dict) and js.get("success") is True: return None
     raw = json.dumps(js, ensure_ascii=False) if isinstance(js, dict) else str(js)
-    m = js.get("message", "") if isinstance(js, dict) else ""
     if re.search(r"exp\D*claim|expired|jwt", raw, re.I): return {"tag": "expired", "msg": "链接已过期", "soft": False}
     if re.search(r"account-unlock-required", raw, re.I): return {"tag": "need_verify", "msg": "要求账号验证", "soft": True, "unlock": True}
     if re.search(r"invalid link", raw, re.I): return {"tag": "invalid_link", "msg": "链接不完整", "soft": False}
     if re.search(r"a key for this identifier already exists", raw, re.I): return {"tag": "already_issued", "msg": "已签发过", "soft": True}
-    if re.search(r"invalid payload|unable to process", raw, re.I): return {"tag": "invalid_payload", "msg": m or "未接受 payload", "soft": True}
-    if re.search(r"page not found", raw, re.I): return {"tag": "api_changed", "msg": "接口已变更", "soft": False}
-    return {"tag": "unknown", "msg": m or raw[:160], "soft": True}
+    return {"tag": "unknown", "msg": raw[:160], "soft": True}
 
-def probe_gap(s, ticket, use_proxy, log):
-    g = GAP_MIN
-    round_ = 0
-    while g <= GAP_MAX + 1e-9:
-        round_ += 1
-        wait = g * random.uniform(0.85, 1.45)
-        time.sleep(wait)
-        js = s.step(ticket, use_proxy)
-        raw = json.dumps(js, ensure_ascii=False)
-        if "rate-limited" in raw or "rate limit" in raw: time.sleep(3); continue
-        if COOLTOO_FAST in raw: g = round(g + 0.1, 1); continue
-        log("wait %.2fs 通过" % wait)
-        return js
-    return None
-
-def store_key(key, mins=0):
-    try:
-        with open(POOL, "a", encoding="utf-8") as f: f.write(json.dumps({"t": int(time.time()), "key": key, "minutes_left": mins}, ensure_ascii=False) + "\n")
-    except Exception: pass
-
-def try_helpreq(s, ft, log, attempts=3):
-    h = {}
-    for i in range(attempts):
-        h = s.helpreq(ft)
-        log("helpreq#%d sid=%s -> %s" % (i + 1, s.sid, json.dumps(h, ensure_ascii=False)))
-        if h.get("allow") or h.get("private"): return True, h, s
-        if h.get("why") == "need_verify": return False, h, s
-        if i < attempts - 1:
-            time.sleep(random.uniform(2.0, 3.5))
-            s = Session()
-    return False, h, s
-
-def solves(s, link, use_proxy=False, max_wait=180, log=lambda m: None, turnstile_token=None):
+def solves(s, link, max_wait=180, log=lambda m: None, turnstile_token=None):
     m = re.search(r"[?&]d=([A-Za-z0-9_\-]+)", link or "")
     ticket = m.group(1) if m else (link or "").strip()
-    out = {"success": False, "ticket": ticket, "key": None, "minutes_left": 0, "proxy": use_proxy, "stage": "init", "message": "", "log": []}
+    out = {"success": False, "ticket": ticket, "key": None, "minutes_left": 0, "stage": "init", "message": "", "log": []}
     def L(msg):
         out["log"].append("[%6.2fs] %s" % (time.time() - t0, msg))
         log(msg)
     t0 = time.time()
     if not ticket: out.update(stage="bad_input", message="未找到 d="); return out
-    cfg = s.ts_config()
-    ts_on = bool(cfg.get("enabled"))
-    ct = None
-    
-    if ts_on:
-        if turnstile_token:
-            st = s.ts_verify(turnstile_token)
-            if st.get("ok"): ct = st.get("claim")
-            else:
-                out["stage"] = "turnstile_rejected"
-                out["message"] = st.get("msg") or "验签失败"
-                return out
+
+    if not turnstile_token:
+        token = get_turnstile_token(L)
+        if token:
+            turnstile_token = token
         else:
-            out["stage"] = "need_turnstile"
-            out["message"] = "无 Turnstile token，无法通过 siteverify"
+            out.update(stage="need_turnstile", message="自动获取 Token 失败")
             return out
-            
-    g = s.gate()
-    ft = g.get("ft") or ""
-    js = s.step(ticket, use_proxy)
+
+    js = s.step(ticket, turnstile_token)
+    L("直连官方 Step -> %s" % json.dumps(js, ensure_ascii=False)[:200])
     rj = reject(js)
-    if rj and rj.get("tag") == "need_verify" and not use_proxy:
-        ok, h, s = try_helpreq(s, ft, log, attempts=3)
-        if ok:
-            use_proxy = True
-            js = s.step(ticket, use_proxy)
-            rj = reject(js)
-        else:
-            out["stage"] = "helpreq_denied"
-            out["message"] = json.dumps(h, ensure_ascii=False)
-            return out
+    
+    if rj and rj.get("tag") == "need_verify":
+        out["stage"] = "account_unlock_required"
+        out["message"] = "官方要求账号验证"
+        return out
     if rj and not rj.get("soft"):
         out.update(stage=rj["tag"], message=rj["msg"])
         return out
+
     url = (js.get("data") or {}).get("url") if isinstance(js.get("data"), dict) else None
     if js.get("success") and url and url != "about:blank":
         nd = pick_d(url)
-        if nd: ticket = nd; probe_gap(s, ticket, use_proxy, L)
+        if nd: 
+            ticket = nd
+            out["ticket"] = ticket
+            time.sleep(3)
+
     key = None
     deadline = time.time() + max_wait
     while time.time() < deadline:
-        st = s.status(ticket, use_proxy)
+        st = s.status(ticket)
+        L("直连官方 Status -> %s" % json.dumps(st, ensure_ascii=False)[:200])
         k = (st.get("data") or {}).get("key") if isinstance(st.get("data"), dict) else None
         if k and k != "KEY_NOT_FOUND": key = k; break
-        rj2 = reject(st)
-        if rj2 and not rj2.get("soft"): out.update(stage=rj2["tag"]); return out
         time.sleep(1.2)
+
     if not key:
         out.update(stage="not_issued", message="未签发卡密")
         return out
+        
     out["key"] = key
     out["stage"] = "issued"
-    if ct is None:
-        out["success"] = True; store_key(key); return out
-    cl = s.claim(key, ct, ft)
-    if cl.get("ok"):
-        out["key"] = cl.get("key") or key
-        out["success"] = True
-        out["message"] = "已放行"
-    else:
-        out["stage"] = "claim_blocked"
-        out["message"] = cl.get("msg") or "未放行"
-        store_key(key)
+    out["success"] = True
+    out["message"] = "解卡成功"
     return out
 
 app = FastAPI()
 
 @app.get("/health")
-def health_check(): return {"status": "ok", "proxy": "OFF"}
+def health_check(): return {"status": "ok"}
 
 @app.get("/delta")
 def delta(url: str = Query(...), token: str = Query(None)):

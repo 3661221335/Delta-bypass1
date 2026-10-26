@@ -1,17 +1,8 @@
 import re
 import time
 import json
-import base64
-import random
-import urllib.parse
-
-try:
-    from Crypto.Cipher import AES
-except ImportError:
-    AES = None
 
 MIN_TICKET_LEN = 33
-DEFAULT_CLIENT_VERSION = "8.2.4"
 
 def extract_ticket(url):
     m = re.search(r"[?&]d=([A-Za-z0-9_\-]+)", url or "")
@@ -85,6 +76,3 @@ def build_stream_payload(ticket, off=1):
     events = [{"t": now - 4000, "type": "pointerdown", "x": 960, "y": 540}]
     payload = {"events": events, "codecProof": "webgl2:ok"}
     return ctr_hex(json.dumps(payload, separators=(",", ":")), ticket, off)
-
-def start_version_watcher():
-    pass

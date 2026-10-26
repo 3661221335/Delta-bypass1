@@ -48,7 +48,7 @@ def jload(txt):
     try: return json.loads(txt)
     except Exception: return {"raw": (txt or "")[:300]}
 
-SBOX = bytes.fromhex("637c777bf26b6fc53001672bfed7ab76ca82c97dfa5947f0add4a2af9ca472c0b7fd9326363ff7cc34a5e5f171d8311504c723c31896059a071280e2eb27b27509832c1a1b6e5aa0523bd6b329e32f8453d100ed20fcb15b6acbbe394a4c58cfd0efaafb434d338545f9027f503c9fa851a3408f929d38f5bcb6da2110fff3d2cd0c13ec5f974417c4a77e3d645d197360814fdc222a908846eeb814de5e0bdb e0323a0a4906245cc2d3ac629195e479e7c8376d8dd54ea96c56f4ea657aae08ba78252e1ca6b4c6e8dd741f4bbd8b8a703eb5664803f60e613557b986c11d9ee1f8981169d98e949b1e87e9ce5528df8ca1890dbfe6426841992d0fb054bb16".replace(" ", ""))
+SBOX = bytes.fromhex("637c777bf26b6fc53001672bfed7ab76ca82c97dfa5947f0add4a2af9ca472c0b7fd9326363ff7cc34a5e5f171d8311504c723c31896059a071280e2eb27b27509832c1a1b6e5aa0523bd6b329e32f8453d100ed20fcb15b6acbbe394a4c58cfd0efaafb434d338545f9027f503c9fa851a3408f929d38f5bcb6da2110fff3d2cd0c13ec5f974417c4a77e3d645d197360814fdc222a908846eeb814de5e0bdbe0323a0a4906245cc2d3ac629195e479e7c8376d8dd54ea96c56f4ea657aae08ba78252e1ca6b4c6e8dd741f4bbd8b8a703eb5664803f60e613557b986c11d9ee1f8981169d98e949b1e87e9ce5528df8ca1890dbfe6426841992d0fb054bb16")
 
 def _xt(a):
     a <<= 1
@@ -128,19 +128,27 @@ def pick_d(url):
 
 def get_turnstile_token(log=lambda m: None):
     payload = {"sitekey": "0x4AAAAAAFT_fRNIBSxl5V8M", "url": "https://ninjak.dpdns.org/"}
-    for ep in ["/turnstile", "/solve", "/"]:
+    headers = {"Content-Type": "application/json", "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+    
+    for ep in ["/solve", "/turnstile", "/"]:
         try:
-            req = urllib.request.Request(f"https://{EZSOLVER_HOST}{ep}", data=json.dumps(payload).encode("utf-8"), headers={"Content-Type": "application/json"}, method="POST")
-            log(f"正在请求 A号 {EZSOLVER_HOST}{ep} ...")
+            req = urllib.request.Request(f"https://{EZSOLVER_HOST}{ep}", data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
+            log(f"POST 请求 A号 {EZSOLVER_HOST}{ep} ...")
             with urllib.request.urlopen(req, timeout=90) as resp:
-                result = json.loads(resp.read().decode("utf-8"))
+                raw = resp.read().decode("utf-8", "ignore")
+                result = json.loads(raw)
                 token = result.get("token") or (result.get("solution") or {}).get("token")
                 if token:
-                    log(f"EzSolver 成功！拿到 token（长度 {len(token)}）")
+                    log(f"EzSolver 成功！拿到 token")
                     return token, None
+                else:
+                    log(f"接口通了，但返回里没 token: {raw[:100]}")
         except urllib.error.HTTPError as e:
-            if e.code != 404: log(f"请求 {ep} 失败: HTTP {e.code}")
-        except Exception as e: log(f"请求 {ep} 出错: {e}")
+            raw_err = e.read().decode("utf-8", "ignore")
+            log(f"请求 {ep} 失败: HTTP {e.code}, 内容: {raw_err[:100]}")
+        except Exception as e:
+            log(f"请求 {ep} 出错: {e}")
+            
     log("所有尝试都失败了")
     return None, "request_failed"
 

@@ -285,6 +285,8 @@ def try_helpreq(s, ft, log, L, attempts=3):
         log("helpreq#%d sid=%s -> %s" % (i + 1, s.sid, json.dumps(h, ensure_ascii=False)))
         if h.get("allow") or h.get("private"):
             return True, h, s
+        if h.get("why") == "need_verify":
+            return False, h, s
         if i < attempts - 1:
             time.sleep(random.uniform(2.0, 3.5))
             s = Session()
@@ -315,7 +317,7 @@ def solves(s, link, use_proxy=False, max_wait=180, log=lambda m: None, turnstile
     if ts_on:
         if turnstile_token:
             st = s.ts_verify(turnstile_token)
-            L("act=ts -> %s" % json.dumps(st, ensure_ascii=False)[:160])
+            L("act=ts -> %s" % json.dumps(st, ensure_ascii=False)[:200])
             if st.get("ok"):
                 ct = st.get("claim")
                 L("人机验证通过，取到 claim 凭证")
@@ -326,13 +328,14 @@ def solves(s, link, use_proxy=False, max_wait=180, log=lambda m: None, turnstile
                 return out
         else:
             out["stage"] = "collected"
-            out["message"] = "无 token，仅采集 key（claim 留到 release）"
-            L("无 token：改为只采集卡密，claim 步骤跳过")
+            out["message"] = "未提供 Turnstile token，只能采集 key（无法过账号验证，无法 claim）"
+            L("未提供 Turnstile token：采集模式")
 
     g = s.gate()
     if g.get("allow") is False:
-        L("gate 未放行（%s），流程票继续用 ft" % (g.get("msg") or "not verified"))
+        L("gate 未放行（%s）" % (g.get("msg") or "not verified"))
     ft = g.get("ft") or ""
+    L("gate allow=%s ft=%s" % (g.get("allow"), (ft[:32] + "...") if ft else "(空)"))
 
     md = s.metadata(ticket, use_proxy)
     if md.get("data"):
@@ -344,6 +347,12 @@ def solves(s, link, use_proxy=False, max_wait=180, log=lambda m: None, turnstile
     L("PUT#1 -> %s" % json.dumps(js, ensure_ascii=False)[:200])
     rj = reject(js)
     if rj and rj.get("tag") == "need_verify" and not use_proxy:
+        if ct is None:
+            out["stage"] = "need_turnstile"
+            out["message"] = ("平台要求 account-unlock-required，绕过需要代理兜底，"
+                              "而代理兜底必须 Turnstile 通过。请带 ?token=<cf-turnstile-response> 重试。")
+            L(out["message"])
+            return out
         ok, h, s = try_helpreq(s, ft, log, L, attempts=3)
         if ok:
             use_proxy = True
@@ -352,9 +361,12 @@ def solves(s, link, use_proxy=False, max_wait=180, log=lambda m: None, turnstile
             L("PUT#1(proxy) -> %s" % json.dumps(js, ensure_ascii=False)[:200])
             rj = reject(js)
         else:
-            out["stage"] = "ip_flagged"
-            out["message"] = "出口 IP 被平台标记，3 次 helpreq 均未放行：%s" % (
-                json.dumps(h, ensure_ascii=False) if h else "no_response")
+            if h.get("why") == "need_verify":
+                out["stage"] = "need_turnstile"
+                out["message"] = "helpreq 要求 Turnstile，token 无效或缺失：%s" % json.dumps(h, ensure_ascii=False)
+            else:
+                out["stage"] = "helpreq_denied"
+                out["message"] = "helpreq 被拒：%s" % json.dumps(h, ensure_ascii=False)
             L(out["message"])
             return out
     if rj and not rj.get("soft"):
@@ -432,13 +444,15 @@ def health_check():
 
 
 @app.get("/delta")
-def delta(url: str = Query(...)):
+def delta(url: str = Query(...), token: str = Query(None)):
     try:
         s = Session()
-        data = solves(s, url, max_wait=180)
+        data = solves(s, url, max_wait=180, turnstile_token=token)
         if data.get("success"):
-            return {"key": data.get("key"), "error": None, "stage": data.get("stage"), "sid": s.sid, "log": data.get("log", [])}
-        return {"key": None, "error": data.get("stage"), "message": data.get("message"), "sid": s.sid, "log": data.get("log", [])}
+            return {"key": data.get("key"), "error": None, "stage": data.get("stage"),
+                    "sid": s.sid, "log": data.get("log", [])}
+        return {"key": None, "error": data.get("stage"), "message": data.get("message"),
+                "sid": s.sid, "log": data.get("log", [])}
     except Exception as e:
         return {"key": None, "error": "exception", "message": "%s - %s" % (type(e).__name__, e)}
 

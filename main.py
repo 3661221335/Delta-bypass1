@@ -2,7 +2,8 @@ import os, re, json, time, base64, hashlib, ssl, random, urllib.request, urllib.
 from fastapi import FastAPI, Query
 from pydantic import BaseModel
 from typing import List
-from cloakbrowser import launch
+
+PROXY_URL = "http://PR3QPWg8NP6-zone-custom-region-US-st-WestVirginia:2c39c20068fb@global.lycheeip.com:10000"
 
 SITE = "https://ninjak.dpdns.org"
 HOST = "https://auth.platorelay.com"
@@ -35,8 +36,16 @@ def http(method, url, data=None, headers=None, timeout=25, form=False):
             body = json.dumps(data).encode()
             h.setdefault("Content-Type", "application/json")
     req = urllib.request.Request(url, data=body, headers=h, method=method)
+    
+    # 👇 主程序的请求也挂上代理，防止平台查 IP
+    if PROXY_URL:
+        proxy_handler = urllib.request.ProxyHandler({'http': PROXY_URL, 'https': PROXY_URL})
+        opener = urllib.request.build_opener(proxy_handler)
+    else:
+        opener = urllib.request.build_opener()
+
     try:
-        with urllib.request.urlopen(req, timeout=timeout, context=SSLCTX) as r:
+        with opener.open(req, timeout=timeout) as r:
             return r.read().decode("utf-8", "ignore")
     except urllib.error.HTTPError as e:
         return e.read().decode("utf-8", "ignore")
@@ -126,40 +135,26 @@ def pick_d(url):
     except Exception: return None
 
 def get_turnstile_token(log=lambda m: None):
-    log("启动 CloakBrowser 自动提取 Token（有头模式）...")
-    token = None
+    log("启动本地独立引擎获取 Token（携带高匿代理）...")
+    payload = {"url": SITE, "sitekey": "0x4AAAAAAFT_fRNIBSxl5V8M"}
+    if PROXY_URL:
+        payload["proxy"] = PROXY_URL
+        log(f"引擎已启用代理: global.lycheeip.com:10000")
+
     try:
-        browser = launch(
-            headless=False,
-            humanize=True,
-            args=[
-                "--no-sandbox",
-                "--disable-dev-shm-usage",
-                "--window-size=1920,1080"
-            ]
-        )
-        page = browser.new_page()
-        page.goto(SITE, timeout=60000)
-        log("页面加载完毕，正在等待 Turnstile 响应...")
-        
-        for _ in range(25):
-            token = page.evaluate('document.querySelector(\'[name="cf-turnstile-response"]\')?.value')
-            if token and len(token) > 20:
-                log(f"成功自动抓取到 Token（长度 {len(token)}）")
-                break
-            time.sleep(1)
-        
-        if not token:
-            content = page.content()
-            if "Cloudflare" in content or "Just a moment" in content or "Enable JavaScript" in content:
-                log("抓取失败：页面被 Cloudflare 拦截（机房 IP 风控）")
+        req = urllib.request.Request("http://127.0.0.1:5000/turnstile", data=json.dumps(payload).encode("utf-8"), headers={"Content-Type": "application/json"}, method="POST")
+        with urllib.request.urlopen(req, timeout=90) as resp:
+            result = json.loads(resp.read().decode("utf-8"))
+            token = result.get("token") or (result.get("solution") or {}).get("token")
+            if token:
+                log(f"成功获取 Token！")
+                return token, None
             else:
-                log("抓取失败：验证码组件未加载，可能被识别为自动化工具。")
-        browser.close()
+                log(f"引擎返回异常: {result}")
     except Exception as e:
-        log(f"自动抓取异常: {e}")
+        log(f"请求本地引擎失败: {e}")
         
-    return (token, None) if token else (None, "no_token")
+    return None, "request_failed"
 
 class Session:
     def __init__(self, sid=None):
@@ -313,7 +308,7 @@ def solves(s, link, use_proxy=False, max_wait=180, log=lambda m: None, turnstile
 app = FastAPI()
 
 @app.get("/health")
-def health_check(): return {"status": "ok", "auto_token": "cloakbrowser"}
+def health_check(): return {"status": "ok", "engine": "Theyka-Solver", "proxy": "ON" if PROXY_URL else "OFF"}
 
 @app.get("/delta")
 def delta(url: str = Query(...), token: str = Query(None)):

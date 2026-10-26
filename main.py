@@ -3,7 +3,7 @@ from fastapi import FastAPI, Query
 from pydantic import BaseModel
 from typing import List
 
-EZSOLVER_HOST = "delta-bypass-production-5949.up.railway.app"
+EZSOLVER_HOST = "delta-bypass1-production.up.railway.app"
 
 SITE = "https://ninjak.dpdns.org"
 HOST = "https://auth.platorelay.com"
@@ -162,7 +162,7 @@ def get_turnstile_token(log=lambda m: None):
             headers={"Content-Type": "application/json"},
             method="POST"
         )
-        log("正在向 A号 EzSolver 申请 Turnstile token...")
+        log(f"正在向 {EZSOLVER_HOST} 申请 Turnstile token...")
         with urllib.request.urlopen(req, timeout=90) as resp:
             result = json.loads(resp.read().decode("utf-8"))
             token = result.get("token")

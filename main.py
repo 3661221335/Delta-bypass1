@@ -2,8 +2,7 @@ import os, re, json, time, base64, hashlib, ssl, random, urllib.request, urllib.
 from fastapi import FastAPI, Query
 from pydantic import BaseModel
 from typing import List
-
-EZSOLVER_HOST = "deta-production-4182.up.railway.app"
+from playwright.sync_api import sync_playwright
 
 SITE = "https://ninjak.dpdns.org"
 HOST = "https://auth.platorelay.com"
@@ -127,31 +126,31 @@ def pick_d(url):
     except Exception: return None
 
 def get_turnstile_token(log=lambda m: None):
-    # 👇 核心修改：把 url 改成了 siteurl
-    payload = {"sitekey": "0x4AAAAAAFT_fRNIBSxl5V8M", "siteurl": "https://ninjak.dpdns.org/"}
-    headers = {"Content-Type": "application/json", "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-    
-    for ep in ["/solve", "/turnstile", "/"]:
-        try:
-            req = urllib.request.Request(f"https://{EZSOLVER_HOST}{ep}", data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
-            log(f"POST 请求 A号 {EZSOLVER_HOST}{ep} ...")
-            with urllib.request.urlopen(req, timeout=90) as resp:
-                raw = resp.read().decode("utf-8", "ignore")
-                result = json.loads(raw)
-                token = result.get("token") or (result.get("solution") or {}).get("token")
-                if token:
-                    log(f"EzSolver 成功！拿到 token")
-                    return token, None
-                else:
-                    log(f"接口通了，但返回里没 token: {raw[:100]}")
-        except urllib.error.HTTPError as e:
-            raw_err = e.read().decode("utf-8", "ignore")
-            log(f"请求 {ep} 失败: HTTP {e.code}, 内容: {raw_err[:100]}")
-        except Exception as e:
-            log(f"请求 {ep} 出错: {e}")
+    log("启动 Playwright 自动提取 Token...")
+    token = None
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True, args=[
+                "--no-sandbox", 
+                "--disable-blink-features=AutomationControlled",
+                "--disable-dev-shm-usage"
+            ])
+            context = browser.new_context(user_agent=UA)
+            page = context.new_page()
+            page.goto(SITE, timeout=60000)
+            log("页面加载完毕，正在等待 Turnstile 响应...")
             
-    log("所有尝试都失败了")
-    return None, "request_failed"
+            for _ in range(20):
+                token = page.evaluate('document.querySelector(\'[name="cf-turnstile-response"]\')?.value')
+                if token and len(token) > 20:
+                    log(f"成功自动抓取到 Token（长度 {len(token)}）")
+                    break
+                time.sleep(1)
+            browser.close()
+    except Exception as e:
+        log(f"自动抓取异常: {e}")
+        
+    return (token, None) if token else (None, "no_token")
 
 class Session:
     def __init__(self, sid=None):
@@ -221,7 +220,7 @@ def try_helpreq(s, ft, log, attempts=3):
             s = Session()
     return False, h, s
 
-def solves(s, link, use_proxy=False, max_wait=180, log=lambda m: None, turnstile_token=None, auto_token=False):
+def solves(s, link, use_proxy=False, max_wait=180, log=lambda m: None, turnstile_token=None, auto_token=True):
     m = re.search(r"[?&]d=([A-Za-z0-9_\-]+)", link or "")
     ticket = m.group(1) if m else (link or "").strip()
     out = {"success": False, "ticket": ticket, "key": None, "minutes_left": 0, "proxy": use_proxy, "stage": "init", "message": "", "log": []}
@@ -233,11 +232,16 @@ def solves(s, link, use_proxy=False, max_wait=180, log=lambda m: None, turnstile
     cfg = s.ts_config()
     ts_on = bool(cfg.get("enabled"))
     ct = None
+    
     if ts_on:
         if not turnstile_token and auto_token:
             tok, err = get_turnstile_token(L)
             if tok: turnstile_token = tok
-            else: L("EzSolver 未拿到 token：%s" % err)
+            else: 
+                out["stage"] = "need_turnstile"
+                out["message"] = "自动抓取 Token 失败"
+                return out
+                
         if turnstile_token:
             st = s.ts_verify(turnstile_token)
             if st.get("ok"): ct = st.get("claim")
@@ -248,6 +252,7 @@ def solves(s, link, use_proxy=False, max_wait=180, log=lambda m: None, turnstile
         else:
             out["stage"] = "need_turnstile"
             return out
+            
     g = s.gate()
     ft = g.get("ft") or ""
     js = s.step(ticket, use_proxy)
@@ -297,8 +302,9 @@ def solves(s, link, use_proxy=False, max_wait=180, log=lambda m: None, turnstile
     return out
 
 app = FastAPI()
+
 @app.get("/health")
-def health_check(): return {"status": "ok", "ezsolver": EZSOLVER_HOST}
+def health_check(): return {"status": "ok", "auto_token": "playwright"}
 
 @app.get("/delta")
 def delta(url: str = Query(...), token: str = Query(None)):

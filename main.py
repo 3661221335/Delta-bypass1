@@ -10,7 +10,7 @@ PROXY_CONFIG = {
     "password": "2c39c20068fb"
 }
 
-SITE = "https://ninjak.dpdns.org"
+SITE = "https://auth.platorelay.com"
 HOST = "https://auth.platorelay.com"
 UA = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
 HDRS = {"Accept": "application/json", "Content-Type": "application/json", "X-Client-Name": "platoboost webclient", "X-Client-Version": "8.2.1"}
@@ -41,7 +41,6 @@ def http(method, url, data=None, headers=None, timeout=25, form=False):
             body = json.dumps(data).encode()
             h.setdefault("Content-Type", "application/json")
     req = urllib.request.Request(url, data=body, headers=h, method=method)
-    
     proxy_url = f"http://{PROXY_CONFIG['username']}:{PROXY_CONFIG['password']}@{PROXY_CONFIG['server'].replace('http://', '')}"
     proxy_handler = urllib.request.ProxyHandler({'http': proxy_url, 'https': proxy_url})
     opener = urllib.request.build_opener(proxy_handler)
@@ -137,7 +136,7 @@ def pick_d(url):
     except Exception: return None
 
 def get_turnstile_token(log=lambda m: None):
-    log("启动 Playwright，照抄逻辑提取 Token（已挂载代理）...")
+    log("启动 Playwright，自己构造本地页面提取 Token（已挂载代理）...")
     token = None
     try:
         with sync_playwright() as p:
@@ -149,8 +148,19 @@ def get_turnstile_token(log=lambda m: None):
             ])
             context = browser.new_context(user_agent=UA)
             page = context.new_page()
-            page.goto(SITE, timeout=60000)
-            log("页面加载完毕，正在等待 Turnstile 响应...")
+            
+            # 关键点：这里不请求 ninjak，而是直接加载本地构造的 HTML 去要 Token
+            html_content = """
+            <!DOCTYPE html>
+            <html>
+            <head><script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script></head>
+            <body>
+                <div class="cf-turnstile" data-sitekey="0x4AAAAAAFT_fRNIBSxl5V8M"></div>
+            </body>
+            </html>
+            """
+            page.set_content(html_content, timeout=60000)
+            log("本地页面构造完毕，正在等待 Turnstile 响应...")
             
             for _ in range(25):
                 token = page.evaluate('document.querySelector(\'[name="cf-turnstile-response"]\')?.value')
@@ -160,7 +170,7 @@ def get_turnstile_token(log=lambda m: None):
                 time.sleep(1)
             
             if not token:
-                log("抓取失败：验证码组件未加载或被拦截。")
+                log("抓取失败：验证码组件未加载。")
             browser.close()
     except Exception as e:
         log(f"自动抓取异常: {e}")
@@ -319,7 +329,7 @@ def solves(s, link, use_proxy=False, max_wait=180, log=lambda m: None, turnstile
 app = FastAPI()
 
 @app.get("/health")
-def health_check(): return {"status": "ok", "mode": "playwright_with_proxy"}
+def health_check(): return {"status": "ok", "mode": "pure_local_playwright"}
 
 @app.get("/delta")
 def delta(url: str = Query(...), token: str = Query(None)):

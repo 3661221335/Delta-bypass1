@@ -127,7 +127,8 @@ def pick_d(url):
     except Exception: return None
 
 def get_turnstile_token(log=lambda m: None):
-    payload = {"sitekey": "0x4AAAAAAFT_fRNIBSxl5V8M", "url": "https://ninjak.dpdns.org/"}
+    # 👇 核心修改：把 url 改成了 siteurl
+    payload = {"sitekey": "0x4AAAAAAFT_fRNIBSxl5V8M", "siteurl": "https://ninjak.dpdns.org/"}
     headers = {"Content-Type": "application/json", "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     
     for ep in ["/solve", "/turnstile", "/"]:

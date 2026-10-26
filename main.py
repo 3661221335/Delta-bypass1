@@ -3,13 +3,12 @@ from fastapi import FastAPI, Query
 from pydantic import BaseModel
 from typing import List
 
-EZSOLVER_HOST = "delta-bypass1-production.up.railway.app"
+EZSOLVER_HOST = "delta-bypass-production-5949.up.railway.app"
 
 SITE = "https://ninjak.dpdns.org"
 HOST = "https://auth.platorelay.com"
 UA = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
-HDRS = {"Accept": "application/json", "Content-Type": "application/json",
-        "X-Client-Name": "platoboost webclient", "X-Client-Version": "8.2.1"}
+HDRS = {"Accept": "application/json", "Content-Type": "application/json", "X-Client-Name": "platoboost webclient", "X-Client-Version": "8.2.1"}
 SSLCTX = ssl.create_default_context()
 SSLCTX.check_hostname = False
 SSLCTX.verify_mode = ssl.CERT_NONE
@@ -25,8 +24,7 @@ CODECS = ["webgl2:ok", "webgl2:mali-g78", "webgl2:apple-gpu", "webgl1:ok"]
 
 def http(method, url, data=None, headers=None, timeout=25, form=False):
     h = {"User-Agent": UA}
-    if headers:
-        h.update(headers)
+    if headers: h.update(headers)
     body = None
     if data is not None:
         if form:
@@ -47,20 +45,10 @@ def http(method, url, data=None, headers=None, timeout=25, form=False):
         return json.dumps({"success": False, "message": "net:%s" % e})
 
 def jload(txt):
-    try:
-        return json.loads(txt)
-    except Exception:
-        return {"raw": (txt or "")[:300]}
+    try: return json.loads(txt)
+    except Exception: return {"raw": (txt or "")[:300]}
 
-SBOX = bytes.fromhex(
-    "637c777bf26b6fc53001672bfed7ab76ca82c97dfa5947f0add4a2af9ca472c0"
-    "b7fd9326363ff7cc34a5e5f171d8311504c723c31896059a071280e2eb27b275"
-    "09832c1a1b6e5aa0523bd6b329e32f8453d100ed20fcb15b6acbbe394a4c58cf"
-    "d0efaafb434d338545f9027f503c9fa851a3408f929d38f5bcb6da2110fff3d2"
-    "cd0c13ec5f974417c4a77e3d645d197360814fdc222a908846eeb814de5e0bdb"
-    "e0323a0a4906245cc2d3ac629195e479e7c8376d8dd54ea96c56f4ea657aae08"
-    "ba78252e1ca6b4c6e8dd741f4bbd8b8a703eb5664803f60e613557b986c11d9e"
-    "e1f8981169d98e949b1e87e9ce5528df8ca1890dbfe6426841992d0fb054bb16")
+SBOX = bytes.fromhex("637c777bf26b6fc53001672bfed7ab76ca82c97dfa5947f0add4a2af9ca472c0b7fd9326363ff7cc34a5e5f171d8311504c723c31896059a071280e2eb27b27509832c1a1b6e5aa0523bd6b329e32f8453d100ed20fcb15b6acbbe394a4c58cfd0efaafb434d338545f9027f503c9fa851a3408f929d38f5bcb6da2110fff3d2cd0c13ec5f974417c4a77e3d645d197360814fdc222a908846eeb814de5e0bdb e0323a0a4906245cc2d3ac629195e479e7c8376d8dd54ea96c56f4ea657aae08ba78252e1ca6b4c6e8dd741f4bbd8b8a703eb5664803f60e613557b986c11d9ee1f8981169d98e949b1e87e9ce5528df8ca1890dbfe6426841992d0fb054bb16".replace(" ", ""))
 
 def _xt(a):
     a <<= 1
@@ -103,26 +91,16 @@ def ctr_hex(plain, ticket, off):
     out = bytearray()
     for i in range(0, len(data), 16):
         ks = _enc(bytes(iv), w)
-        for j, b in enumerate(data[i:i + 16]):
-            out.append(b ^ ks[j])
+        for j, b in enumerate(data[i:i + 16]): out.append(b ^ ks[j])
         for j in range(15, -1, -1):
             iv[j] = (iv[j] + 1) & 0xff
-            if iv[j]:
-                break
+            if iv[j]: break
     return out.hex()
 
 def build_meta(ticket, fp=None):
     fp = fp or {}
-    info = {
-        "ua": UA,
-        "screen": fp.get("screen") or random.choice(SCREENS),
-        "touch": True,
-        "lang": fp.get("lang") or random.choice(LANGS),
-        "tz": fp.get("tz") or random.choice(TZS),
-        "hardwareConcurrency": fp.get("cores") or random.choice(CORES),
-    }
-    payload = {"browserInfo": [info]}
-    return ctr_hex(json.dumps(payload, separators=(",", ":")), ticket, 0)
+    info = {"ua": UA, "screen": fp.get("screen") or random.choice(SCREENS), "touch": True, "lang": fp.get("lang") or random.choice(LANGS), "tz": fp.get("tz") or random.choice(TZS), "hardwareConcurrency": fp.get("cores") or random.choice(CORES)}
+    return ctr_hex(json.dumps({"browserInfo": [info]}, separators=(",", ":")), ticket, 0)
 
 def build_stream(ticket, fp=None):
     fp = fp or {}
@@ -142,98 +120,63 @@ def build_stream(ticket, fp=None):
 def pick_d(url):
     try:
         r = urllib.parse.parse_qs(urllib.parse.urlparse(url).query).get("r", [""])[0]
-        if not r:
-            return None
+        if not r: return None
         raw = base64.urlsafe_b64decode(r + "=" * (-len(r) % 4)).decode("utf-8", "ignore")
         m = re.search(r"[?&]d=([A-Za-z0-9_\-]+)", raw)
         return m.group(1) if m else None
-    except Exception:
-        return None
+    except Exception: return None
 
 def get_turnstile_token(log=lambda m: None):
-    payload = {
-        "sitekey": "0x4AAAAAAFT_fRNIBSxl5V8M",
-        "url": "https://ninjak.dpdns.org/"
-    }
-    try:
-        req = urllib.request.Request(
-            f"https://{EZSOLVER_HOST}/solve",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
-            method="POST"
-        )
-        log(f"正在向 {EZSOLVER_HOST} 申请 Turnstile token...")
-        with urllib.request.urlopen(req, timeout=90) as resp:
-            result = json.loads(resp.read().decode("utf-8"))
-            token = result.get("token")
-            if token:
-                log(f"EzSolver 拿到 token（长度 {len(token)}）")
-                return token, None
-            return None, "no_token"
-    except Exception as e:
-        log(f"EzSolver 请求失败: {e}")
-        return None, "request_failed"
+    payload = {"sitekey": "0x4AAAAAAFT_fRNIBSxl5V8M", "url": "https://ninjak.dpdns.org/"}
+    for ep in ["/turnstile", "/solve", "/"]:
+        try:
+            req = urllib.request.Request(f"https://{EZSOLVER_HOST}{ep}", data=json.dumps(payload).encode("utf-8"), headers={"Content-Type": "application/json"}, method="POST")
+            log(f"正在请求 A号 {EZSOLVER_HOST}{ep} ...")
+            with urllib.request.urlopen(req, timeout=90) as resp:
+                result = json.loads(resp.read().decode("utf-8"))
+                token = result.get("token") or (result.get("solution") or {}).get("token")
+                if token:
+                    log(f"EzSolver 成功！拿到 token（长度 {len(token)}）")
+                    return token, None
+        except urllib.error.HTTPError as e:
+            if e.code != 404: log(f"请求 {ep} 失败: HTTP {e.code}")
+        except Exception as e: log(f"请求 {ep} 出错: {e}")
+    log("所有尝试都失败了")
+    return None, "request_failed"
 
 class Session:
     def __init__(self, sid=None):
         self.sid = sid or (hashlib.md5(os.urandom(16)).hexdigest()[:8] + "%x" % int(time.time()))
-        self.fp = {
-            "screen": random.choice(SCREENS),
-            "lang": random.choice(LANGS),
-            "tz": random.choice(TZS),
-            "cores": random.choice(CORES),
-            "codec": random.choice(CODECS),
-        }
-
+        self.fp = {"screen": random.choice(SCREENS), "lang": random.choice(LANGS), "tz": random.choice(TZS), "cores": random.choice(CORES), "codec": random.choice(CODECS)}
     def fp_sig(self):
         w, h = self.fp["screen"].split("x")
         return "%s,%s,%d,5,%d,Apple GPU" % (w, h, self.fp["cores"], self.fp["cores"])
-
-    def ts_config(self):
-        return jload(http("GET", SITE + "/ts.php?t=%d" % int(time.time() * 1000), headers={"Referer": SITE + "/"}))
-
-    def gate(self):
-        return jload(http("GET", SITE + "/stats.php?act=gate&sid=" + urllib.parse.quote(self.sid), headers={"Referer": SITE + "/"}))
-
-    def ts_verify(self, token):
-        return jload(http("GET", SITE + "/stats.php?act=ts&token=" + urllib.parse.quote(token) + "&sid=" + urllib.parse.quote(self.sid), headers={"Referer": SITE + "/"}))
-
+    def ts_config(self): return jload(http("GET", SITE + "/ts.php?t=%d" % int(time.time() * 1000), headers={"Referer": SITE + "/"}))
+    def gate(self): return jload(http("GET", SITE + "/stats.php?act=gate&sid=" + urllib.parse.quote(self.sid), headers={"Referer": SITE + "/"}))
+    def ts_verify(self, token): return jload(http("GET", SITE + "/stats.php?act=ts&token=" + urllib.parse.quote(token) + "&sid=" + urllib.parse.quote(self.sid), headers={"Referer": SITE + "/"}))
     def helpreq(self, ft, sig=None):
         if sig is None: sig = self.fp_sig()
         return jload(http("GET", SITE + "/stats.php?act=helpreq&sid=" + urllib.parse.quote(self.sid) + "&ft=" + urllib.parse.quote(ft) + "&sig=" + urllib.parse.quote(sig), headers={"Referer": SITE + "/"}))
-
     def claim(self, key, ct, ft=""):
         return jload(http("GET", SITE + "/stats.php?act=claim&key=" + urllib.parse.quote(key) + "&sid=" + urllib.parse.quote(self.sid) + "&ct=" + urllib.parse.quote(ct) + ("&ft=" + urllib.parse.quote(ft) if ft else ""), headers={"Referer": SITE + "/"}))
-
     def call(self, method, path, body=None, use_proxy=False):
         if use_proxy:
-            txt = http("POST", SITE + "/proxy.php", {"method": method, "path": path, "body": body}, headers={"Referer": SITE + "/", "Origin": SITE})
-            return jload(txt)
-        txt = http(method, HOST + path, None if body is None else body, headers=HDRS)
-        return jload(txt)
-
+            return jload(http("POST", SITE + "/proxy.php", {"method": method, "path": path, "body": body}, headers={"Referer": SITE + "/", "Origin": SITE}))
+        return jload(http(method, HOST + path, None if body is None else body, headers=HDRS))
     def step(self, ticket, use_proxy=False):
         return self.call("PUT", "/api/session/step?ticket=%s&service=1" % ticket, {"captcha": None, "meta": build_meta(ticket, self.fp), "stream": build_stream(ticket, self.fp), "resolved": True}, use_proxy)
-
-    def status(self, ticket, use_proxy=False):
-        return self.call("GET", "/api/session/status?ticket=%s" % ticket, None, use_proxy)
-
-    def metadata(self, ticket, use_proxy=False):
-        return self.call("GET", "/api/session/metadata?ticket=%s" % ticket, None, use_proxy)
+    def status(self, ticket, use_proxy=False): return self.call("GET", "/api/session/status?ticket=%s" % ticket, None, use_proxy)
+    def metadata(self, ticket, use_proxy=False): return self.call("GET", "/api/session/metadata?ticket=%s" % ticket, None, use_proxy)
 
 def reject(js):
     if isinstance(js, dict) and js.get("success") is True: return None
-    raw = ""
-    if isinstance(js, dict):
-        raw = " ".join(str(js.get(k)) for k in ("message", "error", "error_description", "code", "type") if js.get(k))
-        raw = raw or json.dumps(js, ensure_ascii=False)
-    else: raw = str(js)
+    raw = json.dumps(js, ensure_ascii=False) if isinstance(js, dict) else str(js)
     m = js.get("message", "") if isinstance(js, dict) else ""
-    if re.search(r"exp\D*claim|expired|jwt", raw, re.I): return {"tag": "expired", "msg": "链接已过期，需重新取链接", "soft": False}
-    if re.search(r"account-unlock-required", raw, re.I): return {"tag": "need_verify", "msg": "平台按出口 IP 要求账号验证", "soft": True, "unlock": True}
+    if re.search(r"exp\D*claim|expired|jwt", raw, re.I): return {"tag": "expired", "msg": "链接已过期", "soft": False}
+    if re.search(r"account-unlock-required", raw, re.I): return {"tag": "need_verify", "msg": "要求账号验证", "soft": True, "unlock": True}
     if re.search(r"invalid link", raw, re.I): return {"tag": "invalid_link", "msg": "链接不完整", "soft": False}
-    if re.search(r"a key for this identifier already exists", raw, re.I): return {"tag": "already_issued", "msg": "该标识已签发过卡密", "soft": True}
-    if re.search(r"invalid payload|unable to process", raw, re.I): return {"tag": "invalid_payload", "msg": m or "服务端未接受 payload", "soft": True}
+    if re.search(r"a key for this identifier already exists", raw, re.I): return {"tag": "already_issued", "msg": "已签发过", "soft": True}
+    if re.search(r"invalid payload|unable to process", raw, re.I): return {"tag": "invalid_payload", "msg": m or "未接受 payload", "soft": True}
     if re.search(r"page not found", raw, re.I): return {"tag": "api_changed", "msg": "接口已变更", "soft": False}
     return {"tag": "unknown", "msg": m or raw[:160], "soft": True}
 
@@ -243,17 +186,13 @@ def probe_gap(s, ticket, use_proxy, log):
     while g <= GAP_MAX + 1e-9:
         round_ += 1
         wait = g * random.uniform(0.85, 1.45)
-        deadline = time.time() + wait
-        while time.time() < deadline: time.sleep(min(0.05, max(0, deadline - time.time())))
+        time.sleep(wait)
         js = s.step(ticket, use_proxy)
         raw = json.dumps(js, ensure_ascii=False)
-        if "rate-limited" in raw or "rate limit" in raw:
-            log("wait %.2fs 命中限流，退避 3s" % wait); time.sleep(3); continue
-        if COOLTOO_FAST in raw:
-            g = round(g + 0.1, 1); continue
-        log("wait %.2fs 通过（第 %d 次）" % (wait, round_))
+        if "rate-limited" in raw or "rate limit" in raw: time.sleep(3); continue
+        if COOLTOO_FAST in raw: g = round(g + 0.1, 1); continue
+        log("wait %.2fs 通过" % wait)
         return js
-    log("扫到 %.1fs 仍未通过" % GAP_MAX)
     return None
 
 def store_key(key, mins=0):
@@ -271,7 +210,6 @@ def try_helpreq(s, ft, log, attempts=3):
         if i < attempts - 1:
             time.sleep(random.uniform(2.0, 3.5))
             s = Session()
-            log("换新 sid：%s" % s.sid)
     return False, h, s
 
 def solves(s, link, use_proxy=False, max_wait=180, log=lambda m: None, turnstile_token=None, auto_token=False):
@@ -282,150 +220,82 @@ def solves(s, link, use_proxy=False, max_wait=180, log=lambda m: None, turnstile
         out["log"].append("[%6.2fs] %s" % (time.time() - t0, msg))
         log(msg)
     t0 = time.time()
-    if not ticket:
-        out.update(stage="bad_input", message="链接里没有找到 d= 票据"); return out
-    L("票据长度 %d" % len(ticket))
+    if not ticket: out.update(stage="bad_input", message="未找到 d="); return out
     cfg = s.ts_config()
     ts_on = bool(cfg.get("enabled"))
-    L("站点人机验证 %s sitekey=%s" % ("开启" if ts_on else "关闭", cfg.get("sitekey")))
     ct = None
     if ts_on:
         if not turnstile_token and auto_token:
-            L("自动向 EzSolver 申请 token")
             tok, err = get_turnstile_token(L)
             if tok: turnstile_token = tok
             else: L("EzSolver 未拿到 token：%s" % err)
         if turnstile_token:
             st = s.ts_verify(turnstile_token)
-            L("act=ts -> %s" % json.dumps(st, ensure_ascii=False)[:220])
-            if st.get("ok"):
-                ct = st.get("claim")
-                L("人机验证通过，取到 claim 凭证")
+            if st.get("ok"): ct = st.get("claim")
             else:
                 out["stage"] = "turnstile_rejected"
-                out["message"] = st.get("msg") or json.dumps(st, ensure_ascii=False)[:200]
-                L("token 未通过 siteverify：%s" % out["message"]); return out
+                out["message"] = st.get("msg") or "验签失败"
+                return out
         else:
             out["stage"] = "need_turnstile"
-            out["message"] = "无 Turnstile token，无法通过 siteverify"
-            L(out["message"]); return out
+            return out
     g = s.gate()
-    if g.get("allow") is False: L("gate 未放行（%s）" % (g.get("msg") or "not verified"))
     ft = g.get("ft") or ""
-    L("gate allow=%s ft=%s" % (g.get("allow"), (ft[:24] + "...") if ft else "(空)"))
-    md = s.metadata(ticket, use_proxy)
-    if md.get("data"):
-        L("会话: name=%s duration=%s completed=%s locking=%s" % (md["data"].get("name"), md["data"].get("duration"), md["data"].get("completed"), md["data"].get("enableLocking")))
     js = s.step(ticket, use_proxy)
-    L("PUT#1 -> %s" % json.dumps(js, ensure_ascii=False)[:200])
     rj = reject(js)
     if rj and rj.get("tag") == "need_verify" and not use_proxy:
         ok, h, s = try_helpreq(s, ft, log, attempts=3)
         if ok:
             use_proxy = True
-            out["proxy"] = True
             js = s.step(ticket, use_proxy)
-            L("PUT#1(proxy) -> %s" % json.dumps(js, ensure_ascii=False)[:200])
             rj = reject(js)
         else:
-            if h.get("why") == "need_verify":
-                out["stage"] = "need_turnstile"; out["message"] = "helpreq 要求 Turnstile：%s" % json.dumps(h, ensure_ascii=False)
-            else:
-                out["stage"] = "helpreq_denied"; out["message"] = "helpreq 被拒：%s" % json.dumps(h, ensure_ascii=False)
-            L(out["message"]); return out
+            out["stage"] = "helpreq_denied"
+            out["message"] = json.dumps(h, ensure_ascii=False)
+            return out
     if rj and not rj.get("soft"):
-        out.update(stage=rj["tag"], message=rj["msg"]); L("硬拒：%s" % rj["msg"]); return out
+        out.update(stage=rj["tag"], message=rj["msg"])
+        return out
     url = (js.get("data") or {}).get("url") if isinstance(js.get("data"), dict) else None
     if js.get("success") and url and url != "about:blank":
         nd = pick_d(url)
-        if nd:
-            ticket = nd; out["ticket"] = ticket; L("服务端下发新会话，进入间隔扫描")
-            js = probe_gap(s, ticket, use_proxy, L) or js
-    elif COOLTOO_FAST in json.dumps(js, ensure_ascii=False):
-        L("首跳撞冷却，转入间隔扫描")
-        probe_gap(s, ticket, use_proxy, L)
-        js2 = s.step(ticket, use_proxy); L("PUT#2 -> %s" % json.dumps(js2, ensure_ascii=False)[:200])
-    elif js.get("success") and url == "about:blank":
-        L("会话已签发过，直接查卡")
+        if nd: ticket = nd; probe_gap(s, ticket, use_proxy, L)
     key = None
     deadline = time.time() + max_wait
-    attempt = 0
     while time.time() < deadline:
-        attempt += 1
         st = s.status(ticket, use_proxy)
-        L("status#%d -> %s" % (attempt, json.dumps(st, ensure_ascii=False)[:200]))
         k = (st.get("data") or {}).get("key") if isinstance(st.get("data"), dict) else None
-        out["minutes_left"] = (st.get("data") or {}).get("minutesLeft", 0) if isinstance(st.get("data"), dict) else 0
         if k and k != "KEY_NOT_FOUND": key = k; break
         rj2 = reject(st)
-        if rj2 and not rj2.get("soft"): out.update(stage=rj2["tag"], message=rj2["msg"]); return out
+        if rj2 and not rj2.get("soft"): out.update(stage=rj2["tag"]); return out
         time.sleep(1.2)
     if not key:
-        out.update(stage="not_issued", message="平台未签发卡密（该会话已签发过或需稍后重试）"); return out
-    out["key"] = key; out["stage"] = "issued"
+        out.update(stage="not_issued", message="未签发卡密")
+        return out
+    out["key"] = key
+    out["stage"] = "issued"
     if ct is None:
-        out["success"] = True; out["message"] = "已取到卡密（未走 claim 校验，可直接使用）"
-        L("卡密：" + key); store_key(key, out.get("minutes_left", 0)); return out
+        out["success"] = True; store_key(key); return out
     cl = s.claim(key, ct, ft)
-    L("claim -> %s" % json.dumps(cl, ensure_ascii=False)[:160])
     if cl.get("ok"):
-        out["key"] = cl.get("key") or key; out["success"] = True; out["message"] = "卡密已放行"
+        out["key"] = cl.get("key") or key
+        out["success"] = True
+        out["message"] = "已放行"
     else:
-        out["stage"] = "claim_blocked"; out["message"] = cl.get("msg") or "claim 未放行"
-        store_key(key, out.get("minutes_left", 0))
+        out["stage"] = "claim_blocked"
+        out["message"] = cl.get("msg") or "未放行"
+        store_key(key)
     return out
 
 app = FastAPI()
-
 @app.get("/health")
-@app.get("/healthz")
-@app.get("/")
-def health_check():
-    return {"status": "ok", "ezsolver": EZSOLVER_HOST}
+def health_check(): return {"status": "ok", "ezsolver": EZSOLVER_HOST}
 
 @app.get("/delta")
 def delta(url: str = Query(...), token: str = Query(None)):
     try:
         s = Session()
         data = solves(s, url, max_wait=180, turnstile_token=token, auto_token=True)
-        if data.get("success"):
-            return {"key": data.get("key"), "error": None, "stage": data.get("stage"), "sid": s.sid, "log": data.get("log", [])}
-        return {"key": None, "error": data.get("stage"), "message": data.get("message"), "sid": s.sid, "log": data.get("log", [])}
+        return data
     except Exception as e:
-        return {"key": None, "error": "exception", "message": "%s - %s" % (type(e).__name__, e)}
-
-class ChatMessage(BaseModel):
-    role: str
-    content: str
-
-class ChatCompletionRequest(BaseModel):
-    model: str
-    messages: List[ChatMessage]
-
-@app.post("/v1/chat/completions")
-def chat_completions(req: ChatCompletionRequest):
-    user_text = ""
-    for msg in req.messages:
-        if msg.role == "user":
-            user_text = msg.content
-            break
-    url_match = re.search(r'https?://[^\s]+', user_text)
-    if not url_match:
-        content = user_text
-    else:
-        try:
-            s = Session()
-            result = solves(s, url_match.group(0), max_wait=180, auto_token=True)
-            if result.get("success"): content = "解卡成功！\nKey: %s" % result.get("key", "")
-            else: content = "解卡失败：%s - %s" % (result.get("stage"), result.get("message"))
-        except Exception as e:
-            content = "解卡出错：%s" % str(e)
-    return {
-        "id": "chatcmpl-001", "object": "chat.completion", "created": int(time.time()), "model": req.model,
-        "choices": [{"index": 0, "message": {"role": "assistant", "content": content}, "finish_reason": "stop"}],
-        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
-    }
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+        return {"key": None, "error": "exception", "message": str(e)}

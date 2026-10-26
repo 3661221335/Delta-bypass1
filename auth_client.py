@@ -54,25 +54,38 @@ def _enc(block, w):
     return bytes(s)
 
 def ctr_hex(plain, ticket, off):
-    kb = ticket[off:off + 16].encode()
-    iv = bytearray(ticket[off + 16:off + 32].encode())
-    w = _expand(kb)
-    data = plain.encode()
-    out = bytearray()
-    for i in range(0, len(data), 16):
-        ks = _enc(bytes(iv), w)
-        for j, b in enumerate(data[i:i + 16]): out.append(b ^ ks[j])
-        for j in range(15, -1, -1):
-            iv[j] = (iv[j] + 1) & 0xff
-            if iv[j]: break
-    return out.hex()
+    try:
+        kb = ticket[off:off + 16].encode()
+        iv = bytearray(ticket[off + 16:off + 32].encode())
+        w = _expand(kb)
+        data = plain.encode()
+        out = bytearray()
+        for i in range(0, len(data), 16):
+            ks = _enc(bytes(iv), w)
+            for j, b in enumerate(data[i:i + 16]): out.append(b ^ ks[j])
+            for j in range(15, -1, -1):
+                iv[j] = (iv[j] + 1) & 0xff
+                if iv[j]: break
+        return out.hex()
+    except Exception:
+        return ""
 
 def build_meta_payload(ticket, off=0):
-    info = {"ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", "screen": "1920x1080", "touch": True, "lang": "zh-CN", "tz": "Asia/Shanghai", "hardwareConcurrency": 8}
+    info = {
+        "ua": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+        "screen": "390x844",
+        "touch": True,
+        "lang": "zh-CN",
+        "tz": "Asia/Shanghai",
+        "hardwareConcurrency": 4
+    }
     return ctr_hex(json.dumps({"browserInfo": [info]}, separators=(",", ":")), ticket, off)
 
 def build_stream_payload(ticket, off=1):
     now = int(time.time() * 1000)
-    events = [{"t": now - 4000, "type": "pointerdown", "x": 960, "y": 540}]
+    events = [
+        {"t": now - 4000, "type": "pointerdown", "x": 195, "y": 422},
+        {"t": now - 3800, "type": "pointerup", "x": 195, "y": 422}
+    ]
     payload = {"events": events, "codecProof": "webgl2:ok"}
     return ctr_hex(json.dumps(payload, separators=(",", ":")), ticket, off)

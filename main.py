@@ -2,7 +2,6 @@ import os, re, json, time, base64, hashlib, ssl, random, urllib.request, urllib.
 from fastapi import FastAPI, Query
 from pydantic import BaseModel
 from typing import List
-from playwright.sync_api import sync_playwright
 
 HOST = "https://auth.platorelay.com"
 UA = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
@@ -130,49 +129,6 @@ def pick_d(url):
         return m.group(1) if m else None
     except Exception: return None
 
-def get_turnstile_token(log):
-    log("启动 Playwright 完全自研提取 Token...")
-    token = None
-    try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=False, args=[
-                "--no-sandbox", 
-                "--disable-blink-features=AutomationControlled",
-                "--disable-dev-shm-usage",
-                "--window-size=1920,1080"
-            ])
-            context = browser.new_context(user_agent=UA)
-            page = context.new_page()
-            
-            html_content = """
-            <!DOCTYPE html>
-            <html>
-            <head><script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script></head>
-            <body><div class="cf-turnstile" data-sitekey="0x4AAAAAAFT_fRNIBSxl5V8M"></div></body>
-            </html>
-            """
-            page.set_content(html_content, timeout=60000)
-            log("本地页面已生成，等待 Turnstile...")
-            
-            for _ in range(25):
-                token = page.evaluate('document.querySelector(\'[name="cf-turnstile-response"]\')?.value')
-                if token and len(token) > 20:
-                    log(f"成功抓取到 Token（长度 {len(token)}）")
-                    break
-                time.sleep(1)
-            
-            if not token:
-                content = page.content()
-                if "Cloudflare" in content or "Just a moment" in content:
-                    log("报错：被 Cloudflare 拦截，机房 IP 风控")
-                else:
-                    log("报错：验证码组件未加载")
-            
-            browser.close()
-    except Exception as e:
-        log(f"自动抓取异常: {e}")
-    return token
-
 class Session:
     def __init__(self, sid=None):
         self.sid = sid or (hashlib.md5(os.urandom(16)).hexdigest()[:8] + "%x" % int(time.time()))
@@ -207,21 +163,13 @@ def solves(s, link, max_wait=180, log=lambda m: None, turnstile_token=None):
     t0 = time.time()
     if not ticket: out.update(stage="bad_input", message="未找到 d="); return out
 
-    if not turnstile_token:
-        token = get_turnstile_token(L)
-        if token:
-            turnstile_token = token
-        else:
-            out.update(stage="need_turnstile", message="自动获取 Token 失败")
-            return out
-
     js = s.step(ticket, turnstile_token)
     L("直连官方 Step -> %s" % json.dumps(js, ensure_ascii=False)[:200])
     rj = reject(js)
     
     if rj and rj.get("tag") == "need_verify":
         out["stage"] = "account_unlock_required"
-        out["message"] = "官方要求账号验证"
+        out["message"] = "官方要求账号验证，当前服务器 IP 被风控"
         return out
     if rj and not rj.get("soft"):
         out.update(stage=rj["tag"], message=rj["msg"])

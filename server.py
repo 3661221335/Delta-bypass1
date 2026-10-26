@@ -7,9 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 from fastapi import FastAPI
 import uvicorn
 
-# 这里导入 main.py 里面的核心解卡函数
 from main import solve_chain
-# 这里导入 auth_client.py 里的提取 ticket 函数
 from auth_client import extract_ticket, MIN_TICKET_LEN
 
 app = FastAPI(title="Delta Cardkey")
@@ -34,11 +32,10 @@ def cache_put(ticket, key):
 
 def solo_pass(ticket):
     try:
-        # 调用 main.py 里的解卡流程
         key, timer = solve_chain(ticket, False, 3)
         return key, None
     except Exception as e:
-        return None, f"solve exception: {type(e).__name__} - {str(e)}"
+        return None, f"内部代码异常: {type(e).__name__} - {str(e)}"
 
 @app.get("/delta")
 async def delta(url: str):
@@ -46,10 +43,10 @@ async def delta(url: str):
     try:
         ticket = extract_ticket(url)
     except Exception:
-        return {"key": None, "error": "invalid url", "times": f"{round(time.time()-t0, 2)}s"}
+        return {"key": None, "error": "无效链接(未提取到d参数)", "times": f"{round(time.time()-t0, 2)}s"}
 
     if len(ticket) < MIN_TICKET_LEN:
-        return {"key": None, "error": "invalid url (no ticket)", "times": f"{round(time.time()-t0, 2)}s"}
+        return {"key": None, "error": "无效链接(长度不足)", "times": f"{round(time.time()-t0, 2)}s"}
 
     cached = cache_get(ticket)
     if cached:
@@ -61,12 +58,17 @@ async def delta(url: str):
     if key:
         cache_put(ticket, key)
         
+    # 统一返回格式，拦截所有报错，保证前端不崩溃
     return {
         "key": key, 
         "cached": False,
         "error": err,
         "times": f"{round(time.time()-t0, 2)}s"
     }
+
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

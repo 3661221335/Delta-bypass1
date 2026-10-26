@@ -3,6 +3,8 @@ from fastapi import FastAPI, Query
 from pydantic import BaseModel
 from typing import List
 
+PROXY_URL = "http://PR3QPWg8NP6-zone-custom-region-US-st-WestVirginia:2c39c20068fb@global.lycheeip.com:10000"
+
 SITE = "https://ninjak.dpdns.org"
 HOST = "https://auth.platorelay.com"
 UA = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
@@ -34,8 +36,13 @@ def http(method, url, data=None, headers=None, timeout=25, form=False):
             body = json.dumps(data).encode()
             h.setdefault("Content-Type", "application/json")
     req = urllib.request.Request(url, data=body, headers=h, method=method)
+    
+    # 👇 这里强制让服务器的请求走你的美国代理，保持 IP 一致！
+    proxy_handler = urllib.request.ProxyHandler({'http': PROXY_URL, 'https': PROXY_URL})
+    opener = urllib.request.build_opener(proxy_handler)
+
     try:
-        with urllib.request.urlopen(req, timeout=timeout, context=SSLCTX) as r:
+        with opener.open(req, timeout=timeout) as r:
             return r.read().decode("utf-8", "ignore")
     except urllib.error.HTTPError as e:
         return e.read().decode("utf-8", "ignore")
@@ -269,7 +276,7 @@ def solves(s, link, use_proxy=False, max_wait=180, log=lambda m: None, turnstile
 app = FastAPI()
 
 @app.get("/health")
-def health_check(): return {"status": "ok"}
+def health_check(): return {"status": "ok", "mode": "proxy_on"}
 
 @app.get("/delta")
 def delta(url: str = Query(...), token: str = Query(None)):

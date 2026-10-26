@@ -1,8 +1,9 @@
-#!/usr/bin/env python3
 import os, re, json, time, base64, hashlib, ssl, random, urllib.request, urllib.parse, urllib.error
 from fastapi import FastAPI, Query
 from pydantic import BaseModel
 from typing import List
+
+CAPSOLVER_KEY = "CAP-CF26C362E4AA26E2434946B0F65077B8D7EA7067325D89E3E85EACA4377BB4CC"
 
 SITE = "https://ninjak.dpdns.org"
 HOST = "https://auth.platorelay.com"
@@ -15,6 +16,9 @@ SSLCTX.verify_mode = ssl.CERT_NONE
 GAP_MIN, GAP_MAX = 3.0, 30.0
 COOLTOO_FAST = "you are finishing checkpoints too fast"
 POOL = os.environ.get("KEY_POOL", "/tmp/keys_pool.jsonl")
+
+CAPSOLVER_SITEKEY = "0x4AAAAAAFT_fRNIBSxl5V8M"
+CAPSOLVER_PAGEURL = "https://ninjak.dpdns.org/"
 
 SCREENS = ["390x844", "393x852", "428x926", "430x932"]
 CORES = [4, 6]
@@ -160,6 +164,49 @@ def pick_d(url):
         return None
 
 
+def get_turnstile_token(log=lambda m: None):
+    if not CAPSOLVER_KEY or "请将你的" in CAPSOLVER_KEY:
+        log("未配置 CAPSOLVER_KEY")
+        return None, "no_key"
+    try:
+        create = jload(http("POST", "https://api.capsolver.com/createTask", {
+            "clientKey": CAPSOLVER_KEY,
+            "task": {
+                "type": "AntiTurnstileTaskProxyLess",
+                "websiteURL": CAPSOLVER_PAGEURL,
+                "websiteKey": CAPSOLVER_SITEKEY,
+            }
+        }, timeout=20))
+    except Exception as e:
+        return None, "create_exception:%s" % e
+    if create.get("errorId") not in (None, 0) or not create.get("taskId"):
+        log("CapSolver createTask 失败: %s" % json.dumps(create, ensure_ascii=False)[:200])
+        return None, "create_failed:%s" % (create.get("errorDescription") or create.get("errorCode") or "unknown")
+    tid = create["taskId"]
+    log("CapSolver task=%s 已提交" % tid)
+    for _ in range(30):
+        time.sleep(2)
+        try:
+            res = jload(http("POST", "https://api.capsolver.com/getTaskResult", {
+                "clientKey": CAPSOLVER_KEY,
+                "taskId": tid,
+            }, timeout=20))
+        except Exception as e:
+            log("CapSolver 轮询异常: %s" % e)
+            continue
+        st = res.get("status")
+        if st == "ready":
+            tok = (res.get("solution") or {}).get("token")
+            if tok:
+                log("CapSolver 拿到 token（长度 %d）" % len(tok))
+                return tok, None
+            return None, "ready_no_token"
+        if st == "failed":
+            log("CapSolver 解题失败: %s" % json.dumps(res, ensure_ascii=False)[:200])
+            return None, "solve_failed:%s" % (res.get("errorDescription") or "unknown")
+    return None, "timeout"
+
+
 class Session:
     def __init__(self, sid=None):
         self.sid = sid or (hashlib.md5(os.urandom(16)).hexdigest()[:8] + "%x" % int(time.time()))
@@ -279,7 +326,8 @@ def store_key(key, mins=0):
         pass
 
 
-def try_helpreq(s, ft, log, L, attempts=3):
+def try_helpreq(s, ft, log, attempts=3):
+    h = {}
     for i in range(attempts):
         h = s.helpreq(ft)
         log("helpreq#%d sid=%s -> %s" % (i + 1, s.sid, json.dumps(h, ensure_ascii=False)))
@@ -294,7 +342,7 @@ def try_helpreq(s, ft, log, L, attempts=3):
     return False, h, s
 
 
-def solves(s, link, use_proxy=False, max_wait=180, log=lambda m: None, turnstile_token=None):
+def solves(s, link, use_proxy=False, max_wait=180, log=lambda m: None, turnstile_token=None, auto_token=False):
     m = re.search(r"[?&]d=([A-Za-z0-9_\-]+)", link or "")
     ticket = m.group(1) if m else (link or "").strip()
     out = {"success": False, "ticket": ticket, "key": None, "minutes_left": 0,
@@ -315,27 +363,35 @@ def solves(s, link, use_proxy=False, max_wait=180, log=lambda m: None, turnstile
     L("站点人机验证 %s sitekey=%s" % ("开启" if ts_on else "关闭", cfg.get("sitekey")))
     ct = None
     if ts_on:
+        if not turnstile_token and auto_token:
+            L("自动向 CapSolver 申请 token")
+            tok, err = get_turnstile_token(L)
+            if tok:
+                turnstile_token = tok
+            else:
+                L("CapSolver 未拿到 token：%s" % err)
         if turnstile_token:
             st = s.ts_verify(turnstile_token)
-            L("act=ts -> %s" % json.dumps(st, ensure_ascii=False)[:200])
+            L("act=ts -> %s" % json.dumps(st, ensure_ascii=False)[:220])
             if st.get("ok"):
                 ct = st.get("claim")
                 L("人机验证通过，取到 claim 凭证")
             else:
                 out["stage"] = "turnstile_rejected"
-                out["message"] = st.get("msg") or json.dumps(st, ensure_ascii=False)
+                out["message"] = st.get("msg") or json.dumps(st, ensure_ascii=False)[:200]
                 L("token 未通过 siteverify：%s" % out["message"])
                 return out
         else:
-            out["stage"] = "collected"
-            out["message"] = "未提供 Turnstile token，只能采集 key（无法过账号验证，无法 claim）"
-            L("未提供 Turnstile token：采集模式")
+            out["stage"] = "need_turnstile"
+            out["message"] = "无 Turnstile token，无法通过 siteverify"
+            L(out["message"])
+            return out
 
     g = s.gate()
     if g.get("allow") is False:
         L("gate 未放行（%s）" % (g.get("msg") or "not verified"))
     ft = g.get("ft") or ""
-    L("gate allow=%s ft=%s" % (g.get("allow"), (ft[:32] + "...") if ft else "(空)"))
+    L("gate allow=%s ft=%s" % (g.get("allow"), (ft[:24] + "...") if ft else "(空)"))
 
     md = s.metadata(ticket, use_proxy)
     if md.get("data"):
@@ -347,13 +403,7 @@ def solves(s, link, use_proxy=False, max_wait=180, log=lambda m: None, turnstile
     L("PUT#1 -> %s" % json.dumps(js, ensure_ascii=False)[:200])
     rj = reject(js)
     if rj and rj.get("tag") == "need_verify" and not use_proxy:
-        if ct is None:
-            out["stage"] = "need_turnstile"
-            out["message"] = ("平台要求 account-unlock-required，绕过需要代理兜底，"
-                              "而代理兜底必须 Turnstile 通过。请带 ?token=<cf-turnstile-response> 重试。")
-            L(out["message"])
-            return out
-        ok, h, s = try_helpreq(s, ft, log, L, attempts=3)
+        ok, h, s = try_helpreq(s, ft, log, attempts=3)
         if ok:
             use_proxy = True
             out["proxy"] = True
@@ -363,7 +413,7 @@ def solves(s, link, use_proxy=False, max_wait=180, log=lambda m: None, turnstile
         else:
             if h.get("why") == "need_verify":
                 out["stage"] = "need_turnstile"
-                out["message"] = "helpreq 要求 Turnstile，token 无效或缺失：%s" % json.dumps(h, ensure_ascii=False)
+                out["message"] = "helpreq 要求 Turnstile：%s" % json.dumps(h, ensure_ascii=False)
             else:
                 out["stage"] = "helpreq_denied"
                 out["message"] = "helpreq 被拒：%s" % json.dumps(h, ensure_ascii=False)
@@ -440,14 +490,16 @@ app = FastAPI()
 @app.get("/healthz")
 @app.get("/")
 def health_check():
-    return {"status": "ok"}
+    is_set = bool(CAPSOLVER_KEY) and "请将你的" not in CAPSOLVER_KEY
+    return {"status": "ok", "capsolver": is_set}
 
 
 @app.get("/delta")
 def delta(url: str = Query(...), token: str = Query(None)):
     try:
         s = Session()
-        data = solves(s, url, max_wait=180, turnstile_token=token)
+        auto = bool(CAPSOLVER_KEY) and "请将你的" not in CAPSOLVER_KEY and not token
+        data = solves(s, url, max_wait=180, turnstile_token=token, auto_token=auto)
         if data.get("success"):
             return {"key": data.get("key"), "error": None, "stage": data.get("stage"),
                     "sid": s.sid, "log": data.get("log", [])}
@@ -481,7 +533,8 @@ def chat_completions(req: ChatCompletionRequest):
     else:
         try:
             s = Session()
-            result = solves(s, url_match.group(0), max_wait=180)
+            auto = bool(CAPSOLVER_KEY) and "请将你的" not in CAPSOLVER_KEY
+            result = solves(s, url_match.group(0), max_wait=180, auto_token=auto)
             if result.get("success"):
                 content = "解卡成功！\nKey: %s" % result.get("key", "")
             else:

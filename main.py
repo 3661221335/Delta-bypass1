@@ -19,7 +19,7 @@ def get_latest_version():
     if now - _version_cache["ts"] < 1800:
         return _version_cache["version"]
     try:
-        # 扒官方前端 JS 拿最新版本
+        # 尝试从官方主页和JS中提取最新版本号
         r = requests.get(PLATOBOOST_HOST, timeout=10)
         js_files = re.findall(r'src="([^"]+\.js)"', r.text)
         for js in js_files:
@@ -33,7 +33,7 @@ def get_latest_version():
                 return ver
     except Exception:
         pass
-    return "8.3.2" # 兜底强制最新版本
+    return "8.3.2"
 
 def extract_ticket(url: str) -> str:
     m = re.search(r"[?&]d=([A-Za-z0-9_\-]+)", url or "")
@@ -41,26 +41,27 @@ def extract_ticket(url: str) -> str:
         return ""
     return m.group(1)
 
-def aes_ctr_encrypt(plain_text: str, key: bytes, iv: bytes) -> str:
+def ctr_hex(plain_text: str, ticket: str, off: int) -> str:
+    # 官方实际使用的密钥偏移逻辑：
+    # meta 使用 off=0，stream 使用 off=1
+    kb = ticket[off:off + 16].encode()
+    iv = bytearray(ticket[off + 16:off + 32].encode())
+    
     ctr = Counter.new(128, initial_value=int.from_bytes(iv, byteorder='big'))
-    cipher = AES.new(key, AES.MODE_CTR, counter=ctr)
+    cipher = AES.new(kb, AES.MODE_CTR, counter=ctr)
     return cipher.encrypt(plain_text.encode()).hex()
 
 def build_payload(ticket: str):
-    if len(ticket) < 64:
+    if len(ticket) < 33:
         return None, None
-    # 官方的 AES 密钥派生逻辑
-    key1 = ticket[0:16].encode()
-    iv1 = ticket[16:32].encode()
-    key2 = ticket[32:48].encode()
-    iv2 = ticket[48:64].encode()
 
-    # 官方最新的 payload 结构
-    meta_plain = '{"browserInfo":[]}'
-    stream_plain = '{"events":[],"codecProof":null}'
+    meta_plain = json.dumps({"browserInfo": []}, separators=(",", ":"))
+    stream_plain = json.dumps({"events": [], "codecProof": None}, separators=(",", ":"))
+
+    # 修复：meta 的 offset = 0，stream 的 offset = 1
+    meta_enc = ctr_hex(meta_plain, ticket, 0)
+    stream_enc = ctr_hex(stream_plain, ticket, 1)
     
-    meta_enc = aes_ctr_encrypt(meta_plain, key1, iv1)
-    stream_enc = aes_ctr_encrypt(stream_plain, key2, iv2)
     return meta_enc, stream_enc
 
 def solve_delta(url: str):
@@ -106,13 +107,11 @@ def solve_delta(url: str):
 
         if not res.get("success"):
             msg = str(res.get("message", ""))
-            # 如果是太快了，等一会儿重试
             if "finishing checkpoints too fast" in msg:
                 time.sleep(6)
                 continue
             return {"key": None, "error": f"step failed: {msg}"}
 
-        # 检查是否有新链接下发
         data = res.get("data") or {}
         new_url = data.get("url")
         if new_url and new_url != "about:blank":
@@ -121,7 +120,6 @@ def solve_delta(url: str):
                 current_ticket = new_ticket
                 continue
 
-        # 轮询卡密
         status_url = f"{PLATOBOOST_HOST}/api/session/status?ticket={current_ticket}"
         for _ in range(8):
             time.sleep(0.8)

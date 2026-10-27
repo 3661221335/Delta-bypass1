@@ -28,13 +28,10 @@ def health():
     return {"status": "ok"}
 
 @app.get("/delta")
-def delta(url: str = Query(...), token: str = Query(None)):
+def delta(url: str = Query(...)):
     ticket = extract_ticket(url)
     if not ticket or len(ticket) < 33:
         return {"key": None, "error": "invalid url (no ticket)"}
-
-    if not token:
-        return {"key": None, "error": "缺少 Token，请在链接后加上 &token=你的Token"}
 
     version = get_latest_version()
     headers = {
@@ -47,7 +44,7 @@ def delta(url: str = Query(...), token: str = Query(None)):
 
     step_url = f"{PLATOBOOST_HOST}/api/session/step?ticket={ticket}&service=1"
     try:
-        payload = {"captcha": token, "meta": "", "stream": "", "resolved": True}
+        payload = {"captcha": None, "meta": "", "stream": "", "resolved": True}
         r = requests.put(step_url, headers=headers, json=payload, timeout=15)
         res_json = r.json()
 

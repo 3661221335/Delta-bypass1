@@ -1,74 +1,98 @@
 import time
 import json
-import re
-import requests
-from fastapi import FastAPI, Query
+import sys
+from auth_client import extract_ticket, do_step, create_session, MIN_TICKET_LEN
 
-app = FastAPI()
+POLL_MAX_ATTEMPTS = 10
+POLL_INTERVAL = 0.1
+MIN_STEP_GAP = 5.0
+STEP_THROTTLE_RETRIES = 2
+MAX_ROUNDS_HARD_CAP = 12
 
-PLATOBOOST_HOST = "https://auth.platorelay.com"
+def solve_one(ticket, session=None, verbose=False):
+    if len(ticket) < MIN_TICKET_LEN:
+        return None, "ticket too short"
+    if session is None:
+        session = create_session()
 
-def get_latest_version():
-    try:
-        r = requests.get(PLATOBOOST_HOST, timeout=10)
-        m = re.search(r'(\d+\.\d+\.\d+)', r.text)
-        if m: return m.group(1)
-    except Exception:
-        pass
-    return "8.2.5"
+    last_step_time = 0
+    current_ticket = ticket
 
-def extract_ticket(url: str) -> str:
-    m = re.search(r"[?&]d=([A-Za-z0-9_\-]+)", url or "")
-    if not m:
-        return ""
-    return m.group(1)
+    for round_num in range(1, MAX_ROUNDS_HARD_CAP + 1):
+        gap = time.time() - last_step_time
+        if gap < MIN_STEP_GAP:
+            time.sleep(MIN_STEP_GAP - gap)
 
-@app.get("/health")
-def health():
-    return {"status": "ok"}
+        result = do_step(session, current_ticket)
+        last_step_time = time.time()
 
-@app.get("/delta")
-def delta(url: str = Query(...)):
-    ticket = extract_ticket(url)
-    if not ticket or len(ticket) < 33:
-        return {"key": None, "error": "invalid url (no ticket)"}
+        if not result.get("success"):
+            msg = result.get("message", "")
+            if "finishing checkpoints too fast" in msg:
+                if verbose:
+                    print(f"  [round {round_num}] throttled, retrying...")
+                for _ in range(STEP_THROTTLE_RETRIES):
+                    time.sleep(MIN_STEP_GAP)
+                    result = do_step(session, current_ticket)
+                    last_step_time = time.time()
+                    if result.get("success"):
+                        break
+                if not result.get("success"):
+                    return None, f"step failed after retry: {msg}"
+            else:
+                return None, f"step failed: {msg}"
 
-    version = get_latest_version()
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "application/json",
-        "Content-Type": "application/json",
-        "X-Client-Name": "platoboost webclient",
-        "X-Client-Version": version
-    }
+        data = result.get("data", {})
+        url = data.get("url")
+        if url and url != "about:blank":
+            new_ticket = extract_ticket(url)
+            if new_ticket:
+                current_ticket = new_ticket
+                if verbose:
+                    print(f"  [round {round_num}] new ticket: {current_ticket[:20]}...")
+                continue
 
-    step_url = f"{PLATOBOOST_HOST}/api/session/step?ticket={ticket}&service=1"
-    try:
-        payload = {"captcha": None, "meta": "", "stream": "", "resolved": True}
-        r = requests.put(step_url, headers=headers, json=payload, timeout=15)
-        res_json = r.json()
-
-        if not res_json.get("success"):
-            msg = str(res_json.get("message", ""))
-            return {"key": None, "error": f"step failed: {msg}"}
-
-        data = res_json.get("data") or {}
-        new_url = data.get("url")
-        if new_url and new_url != "about:blank":
-            new_ticket = extract_ticket(new_url)
-            if new_ticket: ticket = new_ticket
-
-        status_url = f"{PLATOBOOST_HOST}/api/session/status?ticket={ticket}"
-        for _ in range(10):
-            time.sleep(1.2)
-            sr = requests.get(status_url, headers=headers, timeout=10)
-            sres = sr.json()
+        status_url = f"https://auth.platorelay.com/api/session/status?ticket={current_ticket}"
+        for attempt in range(POLL_MAX_ATTEMPTS):
+            time.sleep(POLL_INTERVAL)
+            try:
+                sr = session.get(status_url, timeout=10)
+                sres = sr.json()
+            except Exception:
+                continue
             key = (sres.get("data") or {}).get("key")
             if key and key != "KEY_NOT_FOUND":
-                return {"key": key, "error": None}
+                return key, None
             if "expired" in str(sres):
-                return {"key": None, "error": "expired"}
+                return None, "expired"
 
-        return {"key": None, "error": "not issued (timeout)"}
-    except Exception as e:
-        return {"key": None, "error": f"exception: {str(e)}"}
+        if verbose:
+            print(f"  [round {round_num}] poll timeout, next round...")
+        current_ticket = ticket
+
+    return None, "max rounds exceeded"
+
+def main():
+    if len(sys.argv) < 2:
+        print("usage: python main.py <auth_url>")
+        sys.exit(1)
+    url = sys.argv[1]
+    try:
+        ticket = extract_ticket(url)
+    except ValueError as e:
+        print(f"error: {e}")
+        sys.exit(1)
+
+    print(f"solving ticket: {ticket[:20]}...")
+    start = time.time()
+    key, error = solve_one(ticket, verbose=True)
+    elapsed = time.time() - start
+
+    if key:
+        print(json.dumps({"key": key, "error": None, "times": f"{elapsed:.2f}s"}, ensure_ascii=False))
+    else:
+        print(json.dumps({"key": None, "error": error, "times": f"{elapsed:.2f}s"}, ensure_ascii=False))
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()

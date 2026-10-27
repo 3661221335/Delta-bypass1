@@ -9,7 +9,7 @@ from playwright.sync_api import sync_playwright
 import asyncio
 
 app = FastAPI()
-executor = ThreadPoolExecutor(max_workers=2) # 限制并发，防止内存爆炸
+executor = ThreadPoolExecutor(max_workers=2)
 
 SITE = "https://izen.lol"
 SITEKEY = "0x4AAAAAADNEi_2N24gpQqY0"
@@ -20,6 +20,13 @@ HDRS = {
     "Origin": SITE,
     "Referer": SITE + "/",
     "User-Agent": UA,
+}
+
+# 👇 挂上你的美国代理
+PROXY_CONFIG = {
+    "server": "http://global.lycheeip.com:10000",
+    "username": "PR3QPWg8NP6-zone-custom-region-US-st-WestVirginia",
+    "password": "2c39c20068fb"
 }
 
 JS_RENDER = """
@@ -47,13 +54,10 @@ async () => {
 def get_token_sync():
     try:
         with sync_playwright() as p:
-            # 使用无头模式，并添加节省内存的参数
-            b = p.chromium.launch(headless=True, args=[
+            b = p.chromium.launch(headless=False, proxy=PROXY_CONFIG, args=[
                 "--no-sandbox",
                 "--disable-dev-shm-usage",
-                "--disable-gpu",
-                "--disable-software-rasterizer",
-                "--disable-extensions"
+                "--disable-blink-features=AutomationControlled"
             ])
             ctx = b.new_context(
                 user_agent=UA,
@@ -63,8 +67,8 @@ def get_token_sync():
                 is_mobile=True,
             )
             pg = ctx.new_page()
-            pg.goto(SITE, wait_until="domcontentloaded", timeout=20000)
-            pg.wait_for_timeout(1000)
+            pg.goto(SITE, wait_until="domcontentloaded", timeout=30000)
+            pg.wait_for_timeout(2000)
             tok = pg.evaluate(JS_RENDER)
             b.close()
             
@@ -73,7 +77,7 @@ def get_token_sync():
                 return None
             return tok
     except Exception as e:
-        print("Playwright 内部报错:", str(e))
+        print("Playwright Exception:", str(e))
         return None
 
 def bypass_captcha_sync(url, token):
@@ -95,13 +99,11 @@ def health():
 async def delta(url: str = Query(...)):
     loop = asyncio.get_running_loop()
     
-    # 1. 在线程池里跑 Playwright，绝对不卡死主程序
     token = await loop.run_in_executor(executor, get_token_sync)
     
     if not token:
-        return {"key": None, "error": "获取Token失败(IP被CF拦截或内存溢出)", "source": "izen"}
+        return {"key": None, "error": "获取Token失败(挂代理后依然被拦截)", "source": "izen"}
     
-    # 2. 在线程池里请求 izen 接口
     res = await loop.run_in_executor(executor, bypass_captcha_sync, url, token)
     
     if not res.get("success"):

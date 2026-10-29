@@ -8,7 +8,6 @@ import ssl
 import struct
 import urllib.parse
 import asyncio
-from collections import defaultdict
 from fastapi import FastAPI, Query
 
 HOST = "delta-solve.app.workbuddy.host"
@@ -35,7 +34,9 @@ STATIC = [(":authority",""),(":method","GET"),(":method","POST"),(":path","/"),(
 UAS = ["Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1","Mozilla/5.0 (iPhone; CPU iPhone OS 17_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Mobile/15E148 Safari/604.1","Mozilla/5.0 (iPhone; CPU iPhone OS 18_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Mobile/15E148 Safari/604.1"]
 FPS = [{"l": "zh-CN", "p": "iPhone", "s": "428x926", "c": 4, "touch": True, "tz": "Asia/Shanghai"},{"l": "zh-CN", "p": "iPhone", "s": "390x844", "c": 6, "touch": True, "tz": "Asia/Shanghai"},{"l": "zh-CN", "p": "iPhone", "s": "393x852", "c": 6, "touch": True, "tz": "Asia/Shanghai"},{"l": "zh-CN", "p": "iPhone", "s": "430x932", "c": 6, "touch": True, "tz": "Asia/Shanghai"}]
 CH_ERR = ("CHALLENGE_REQUIRED", "CHALLENGE_WRONG", "CHALLENGE_EXPIRED", "CHALLENGE_INVALID")
+FATAL = ("BANNED", "BOT_BLOCKED")
 
+# 引擎端缓存配置
 CACHE = {}
 CACHE_TTL = 86400
 
@@ -175,7 +176,7 @@ class H2Error(Exception):
     pass
 
 class H2Client(object):
-    def __init__(self, host, port=443, timeout=2.5): # 关键：超时压到2.5秒
+    def __init__(self, host, port=443, timeout=8):
         self.host = host
         self.port = port
         self.timeout = timeout
@@ -227,7 +228,7 @@ def _hdrs(path, vid):
     fp = random.choice(FPS)
     return [(":method", "GET"), (":scheme", "https"), (":authority", HOST), (":path", path),("user-agent", random.choice(UAS)),("x-client-info", urllib.parse.quote(json.dumps(fp, separators=(",", ":")))),("accept", "application/json"),("accept-language", "zh-CN,zh-Hans;q=0.9"),("referer", "https://%s/" % HOST),("origin", "https://%s" % HOST),("sec-fetch-site", "same-origin"),("sec-fetch-mode", "cors"),("sec-fetch-dest", "empty"),("priority", "u=1, i"),("cookie", "ds_vid=" + vid)]
 
-def _one_request(path, vid, timeout=2.5):
+def _one_request(path, vid, timeout=8):
     c = H2Client(HOST, timeout=timeout)
     try:
         c.connect()
@@ -288,7 +289,7 @@ def arith(q):
 def solve_delta(link):
     path = "/api/solve?url=" + urllib.parse.quote(link, safe="")
     vid = "v_" + os.urandom(8).hex()
-    r = _one_request(path, vid, timeout=2.5)
+    r = _one_request(path, vid, timeout=8)
     
     err_msg = str(r.get("error", "")) + str(r.get("message", ""))
     if "too fast" in err_msg.lower() or "finishing" in err_msg.lower() or "throttle" in err_msg.lower():
@@ -300,12 +301,12 @@ def solve_delta(link):
         tok = r.get("token")
         q = r.get("question", "")
         if not tok or not q:
-            c = _one_request("/api/challenge", "v_" + os.urandom(8).hex(), 2.5)
+            c = _one_request("/api/challenge", "v_" + os.urandom(8).hex(), 8)
             tok = tok or c.get("token")
             q = q or c.get("question", "")
         ans = arith(q)
         p = ("/api/solve?url=" + urllib.parse.quote(link, safe="") + "&ct=" + urllib.parse.quote(tok or "") + "&ca=" + urllib.parse.quote(ans))
-        r2 = _one_request(p, "v_" + os.urandom(8).hex(), 2.5)
+        r2 = _one_request(p, "v_" + os.urandom(8).hex(), 8)
         
         err_msg2 = str(r2.get("error", "")) + str(r2.get("message", ""))
         if "too fast" in err_msg2.lower() or "finishing" in err_msg2.lower() or "throttle" in err_msg2.lower():
@@ -322,6 +323,7 @@ def health_check():
 
 @app.get("/delta")
 async def delta(url: str = Query(...)):
+    # 1. 检查引擎端 24 小时缓存
     if url in CACHE:
         cached_data = CACHE[url]
         if time.time() - cached_data["time"] < CACHE_TTL:
@@ -329,17 +331,13 @@ async def delta(url: str = Query(...)):
         else:
             del CACHE[url]
 
-    # 绝对不给 Railway 超过 4 秒的机会
     try:
         loop = asyncio.get_running_loop()
-        res = await asyncio.wait_for(
-            loop.run_in_executor(None, solve_delta, url), 
-            timeout=3.8
-        )
+        res = await loop.run_in_executor(None, solve_delta, url)
         if res.get("ok"):
             key = res.get("key", "")
             if key:
-                CACHE[url] = {"key": key, "time": time.time()}
+                CACHE[url] = {"key": key, "time": time.time()} # 存入缓存
             return {"key": key, "error": None}
         else:
             err = str(res.get("error", "solve failed"))
@@ -350,9 +348,7 @@ async def delta(url: str = Query(...)):
             return {"key": None, "error": err}
     except ValueError as e:
         if "THROTTLE" in str(e):
-            return {"key": None, "error": "NEED_RETRY"} # 秒回，让机器人等
+            return {"key": None, "error": "NEED_RETRY"}
         return {"key": None, "error": str(e)}
-    except asyncio.TimeoutError:
-        return {"key": None, "error": "NETWORK_TIMEOUT"}
     except Exception as e:
         return {"key": None, "error": str(e)}

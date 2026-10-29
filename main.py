@@ -259,7 +259,12 @@ def _one_request(path, vid, timeout=3):
                 break
         if not body:
             return {"ok": False, "error": "EMPTY", "message": "无响应"}
-        return json.loads(bytes(body).decode("utf-8", "replace"))
+        
+        try:
+            return json.loads(bytes(body).decode("utf-8", "replace"))
+        except json.JSONDecodeError:
+            return {"ok": False, "error": "WAF_BLOCK", "message": "触发浏览器验证"}
+            
     except Exception as e:
         return {"ok": False, "error": "NETWORK", "message": str(e)}
     finally:
@@ -281,11 +286,13 @@ def arith(q):
     return str(a + b)
 
 def solve_delta(link):
+    start_t = time.time()
     path = "/api/solve?url=" + urllib.parse.quote(link, safe="")
     vid = "v_" + os.urandom(8).hex()
     r = _one_request(path, vid, timeout=3)
     
     if r.get("ok"):
+        r["elapsed"] = round(time.time() - start_t, 2)
         return r
     if r.get("error") in CH_ERR:
         tok = r.get("token")
@@ -296,7 +303,10 @@ def solve_delta(link):
             q = q or c.get("question", "")
         ans = arith(q)
         p = ("/api/solve?url=" + urllib.parse.quote(link, safe="") + "&ct=" + urllib.parse.quote(tok or "") + "&ca=" + urllib.parse.quote(ans))
-        return _one_request(p, "v_" + os.urandom(8).hex(), 3)
+        r2 = _one_request(p, "v_" + os.urandom(8).hex(), 3)
+        if r2.get("ok"):
+            r2["elapsed"] = round(time.time() - start_t, 2)
+        return r2
     return r
 
 app = FastAPI()
@@ -316,7 +326,7 @@ def delta(url: str = Query(...)):
         try:
             res = solve_delta(url)
             if res.get("ok"):
-                return {"key": res.get("key", ""), "error": None}
+                return {"key": res.get("key", ""), "error": None, "elapsed": res.get("elapsed", 0)}
             
             err_str = str(res.get("error", "")).lower()
             msg_str = str(res.get("message", "")).lower()
@@ -329,23 +339,26 @@ def delta(url: str = Query(...)):
                 time.sleep(5.1)
                 continue
                 
+            if "waf_block" in full_err:
+                return {"key": None, "error": "invalid url"}
+                
             if "network" in full_err or "empty" in full_err:
                 net_retry_count += 1
                 if net_retry_count > 3:
-                    return {"key": None, "error": "网络连接异常，请稍后再试"}
+                    return {"key": None, "error": "timeout"}
                 time.sleep(0.5)
                 continue
                 
             if "pending" in full_err:
-                return {"key": None, "error": "链接正在处理中，请稍后再试"}
+                return {"key": None, "error": "invalid url"}
                 
-            return {"key": None, "error": str(res.get("error", "未知错误"))}
+            return {"key": None, "error": str(res.get("error", "unknown"))}
             
         except Exception as e:
             net_retry_count += 1
             if net_retry_count > 3:
-                return {"key": None, "error": "网络连接异常，请稍后再试"}
+                return {"key": None, "error": "timeout"}
             time.sleep(0.5)
             continue
             
-    return {"key": None, "error": "系统繁忙，请稍后再试"}
+    return {"key": None, "error": "timeout"}

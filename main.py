@@ -293,7 +293,7 @@ def solve_delta(link):
     
     err_msg = str(r.get("error", "")) + str(r.get("message", ""))
     if "too fast" in err_msg.lower() or "finishing" in err_msg.lower() or "throttle" in err_msg.lower():
-        raise ValueError("THROTTLE: " + err_msg)
+        raise ValueError("THROTTLE")
         
     if r.get("ok"):
         return r
@@ -310,7 +310,7 @@ def solve_delta(link):
         
         err_msg2 = str(r2.get("error", "")) + str(r2.get("message", ""))
         if "too fast" in err_msg2.lower() or "finishing" in err_msg2.lower() or "throttle" in err_msg2.lower():
-            raise ValueError("THROTTLE: " + err_msg2)
+            raise ValueError("THROTTLE")
             
         return r2
     return r
@@ -320,58 +320,35 @@ app = FastAPI()
 _inflight = {}
 _locks = defaultdict(asyncio.Lock)
 
-async def process_request(url: str):
-    start = time.monotonic()
-    TOTAL_BUDGET = 19.0
-    last_err = "Unknown Error"
-    
-    while True:
-        remaining = TOTAL_BUDGET - (time.monotonic() - start)
-        if remaining <= 0:
-            break
-            
-        wait_time = 0.5
-        try:
-            loop = asyncio.get_running_loop()
-            res = await asyncio.wait_for(
-                loop.run_in_executor(None, solve_delta, url), 
-                timeout=remaining
-            )
-            if res.get("ok"):
-                key = res.get("key", "")
-                if key:
-                    CACHE[url] = {"key": key, "time": time.time()}
-                return {"key": key, "error": None}
-            else:
-                last_err = str(res.get("error", "solve failed"))
-                if last_err == "NETWORK":
-                    last_err = f"NETWORK: {res.get('message', '连接失败')}"
-                    break
-                if "PENDING" in last_err.upper():
-                    return {"key": None, "error": "UPSTREAM_PENDING"}
-                if "invalid url" in last_err.lower() or "expired" in last_err.lower():
-                    return {"key": None, "error": last_err}
-                break
-        except ValueError as e:
-            last_err = str(e)
-            if "THROTTLE" in last_err:
-                wait_time = 5.1
-            else:
-                break
-        except asyncio.TimeoutError:
-            last_err = "Timeout inside thread"
-            break
-        except Exception as e:
-            last_err = f"{type(e).__name__}: {str(e)}"
-            break
-            
-        remaining = TOTAL_BUDGET - (time.monotonic() - start)
-        if remaining <= 0:
-            break
-            
-        await asyncio.sleep(min(wait_time, remaining))
-
-    return {"key": None, "error": last_err}
+async def single_attempt(url: str):
+    try:
+        loop = asyncio.get_running_loop()
+        res = await asyncio.wait_for(
+            loop.run_in_executor(None, solve_delta, url), 
+            timeout=8.0
+        )
+        if res.get("ok"):
+            key = res.get("key", "")
+            if key:
+                CACHE[url] = {"key": key, "time": time.time()}
+            return {"key": key, "error": None}
+        else:
+            err = str(res.get("error", "solve failed"))
+            if err == "NETWORK":
+                return {"key": None, "error": f"NETWORK: {res.get('message', '连接失败')}"}
+            if "PENDING" in err.upper():
+                return {"key": None, "error": "UPSTREAM_PENDING"}
+            if "invalid url" in err.lower() or "expired" in err.lower():
+                return {"key": None, "error": err}
+            return {"key": None, "error": err}
+    except ValueError as e:
+        if "THROTTLE" in str(e):
+            return {"key": None, "error": "NEED_RETRY", "wait": 5.2}
+        return {"key": None, "error": str(e)}
+    except asyncio.TimeoutError:
+        return {"key": None, "error": "timeout"}
+    except Exception as e:
+        return {"key": None, "error": str(e)}
 
 async def _run_and_cleanup(url, task):
     try:
@@ -399,7 +376,7 @@ async def delta(url: str = Query(...)):
             task = _inflight[url]
             is_new = False
         else:
-            task = asyncio.create_task(process_request(url))
+            task = asyncio.create_task(single_attempt(url))
             _inflight[url] = task
             is_new = True
             

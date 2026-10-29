@@ -34,6 +34,9 @@ UAS = ["Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1
 FPS = [{"l": "zh-CN", "p": "iPhone", "s": "428x926", "c": 4, "touch": True, "tz": "Asia/Shanghai"},{"l": "zh-CN", "p": "iPhone", "s": "390x844", "c": 6, "touch": True, "tz": "Asia/Shanghai"},{"l": "zh-CN", "p": "iPhone", "s": "393x852", "c": 6, "touch": True, "tz": "Asia/Shanghai"},{"l": "zh-CN", "p": "iPhone", "s": "430x932", "c": 6, "touch": True, "tz": "Asia/Shanghai"}]
 CH_ERR = ("CHALLENGE_REQUIRED", "CHALLENGE_WRONG", "CHALLENGE_EXPIRED", "CHALLENGE_INVALID")
 
+CACHE = {}
+CACHE_TTL = 86400
+
 def _hpack_int(n, bits, first):
     limit = (1 << bits) - 1
     if n < limit:
@@ -259,12 +262,7 @@ def _one_request(path, vid, timeout=3):
                 break
         if not body:
             return {"ok": False, "error": "EMPTY", "message": "无响应"}
-        
-        try:
-            return json.loads(bytes(body).decode("utf-8", "replace"))
-        except json.JSONDecodeError:
-            return {"ok": False, "error": "WAF_BLOCK", "message": "触发浏览器验证"}
-            
+        return json.loads(bytes(body).decode("utf-8", "replace"))
     except Exception as e:
         return {"ok": False, "error": "NETWORK", "message": str(e)}
     finally:
@@ -290,11 +288,13 @@ def solve_delta(link):
     path = "/api/solve?url=" + urllib.parse.quote(link, safe="")
     vid = "v_" + os.urandom(8).hex()
     r = _one_request(path, vid, timeout=3)
+    req_time = round(time.time() - start_t, 2)
     
     if r.get("ok"):
-        r["elapsed"] = round(time.time() - start_t, 2)
+        r["elapsed"] = req_time
         return r
     if r.get("error") in CH_ERR:
+        start_t2 = time.time()
         tok = r.get("token")
         q = r.get("question", "")
         if not tok or not q:
@@ -305,7 +305,7 @@ def solve_delta(link):
         p = ("/api/solve?url=" + urllib.parse.quote(link, safe="") + "&ct=" + urllib.parse.quote(tok or "") + "&ca=" + urllib.parse.quote(ans))
         r2 = _one_request(p, "v_" + os.urandom(8).hex(), 3)
         if r2.get("ok"):
-            r2["elapsed"] = round(time.time() - start_t, 2)
+            r2["elapsed"] = round(time.time() - start_t2, 2)
         return r2
     return r
 
@@ -317,6 +317,13 @@ def health_check():
 
 @app.get("/delta")
 def delta(url: str = Query(...)):
+    if url in CACHE:
+        cached_data = CACHE[url]
+        if time.time() - cached_data["time"] < CACHE_TTL:
+            return {"key": cached_data["key"], "error": None, "elapsed": 0.01}
+        else:
+            del CACHE[url]
+
     start_time = time.time()
     MAX_TIME = 15.0
     retry_count = 0
@@ -326,7 +333,10 @@ def delta(url: str = Query(...)):
         try:
             res = solve_delta(url)
             if res.get("ok"):
-                return {"key": res.get("key", ""), "error": None, "elapsed": res.get("elapsed", 0)}
+                key = res.get("key", "")
+                if key:
+                    CACHE[url] = {"key": key, "time": time.time()}
+                return {"key": key, "error": None, "elapsed": res.get("elapsed", 0)}
             
             err_str = str(res.get("error", "")).lower()
             msg_str = str(res.get("message", "")).lower()
@@ -335,30 +345,30 @@ def delta(url: str = Query(...)):
             if "too fast" in full_err or "finishing" in full_err:
                 retry_count += 1
                 if retry_count > 1 or (MAX_TIME - (time.time() - start_time)) < 6:
-                    return {"key": None, "error": "请求过于频繁，请稍后再试"}
+                    return {"key": None, "error": "请求过于频繁，请稍后再试", "elapsed": 0}
                 time.sleep(5.1)
                 continue
                 
             if "waf_block" in full_err:
-                return {"key": None, "error": "invalid url"}
+                return {"key": None, "error": "invalid url", "elapsed": 0}
                 
             if "network" in full_err or "empty" in full_err:
                 net_retry_count += 1
                 if net_retry_count > 3:
-                    return {"key": None, "error": "timeout"}
+                    return {"key": None, "error": "timeout", "elapsed": 0}
                 time.sleep(0.5)
                 continue
                 
             if "pending" in full_err:
-                return {"key": None, "error": "invalid url"}
+                return {"key": None, "error": "invalid url", "elapsed": 0}
                 
-            return {"key": None, "error": str(res.get("error", "unknown"))}
+            return {"key": None, "error": str(res.get("error", "unknown")), "elapsed": 0}
             
         except Exception as e:
             net_retry_count += 1
             if net_retry_count > 3:
-                return {"key": None, "error": "timeout"}
+                return {"key": None, "error": "timeout", "elapsed": 0}
             time.sleep(0.5)
             continue
             
-    return {"key": None, "error": "timeout"}
+    return {"key": None, "error": "timeout", "elapsed": 0}

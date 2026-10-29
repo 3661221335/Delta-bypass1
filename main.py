@@ -176,7 +176,7 @@ class H2Error(Exception):
     pass
 
 class H2Client(object):
-    def __init__(self, host, port=443, timeout=8):
+    def __init__(self, host, port=443, timeout=6):
         self.host = host
         self.port = port
         self.timeout = timeout
@@ -228,7 +228,7 @@ def _hdrs(path, vid):
     fp = random.choice(FPS)
     return [(":method", "GET"), (":scheme", "https"), (":authority", HOST), (":path", path),("user-agent", random.choice(UAS)),("x-client-info", urllib.parse.quote(json.dumps(fp, separators=(",", ":")))),("accept", "application/json"),("accept-language", "zh-CN,zh-Hans;q=0.9"),("referer", "https://%s/" % HOST),("origin", "https://%s" % HOST),("sec-fetch-site", "same-origin"),("sec-fetch-mode", "cors"),("sec-fetch-dest", "empty"),("priority", "u=1, i"),("cookie", "ds_vid=" + vid)]
 
-def _one_request(path, vid, timeout=8):
+def _one_request(path, vid, timeout=6):
     c = H2Client(HOST, timeout=timeout)
     try:
         c.connect()
@@ -289,7 +289,7 @@ def arith(q):
 def solve_delta(link):
     path = "/api/solve?url=" + urllib.parse.quote(link, safe="")
     vid = "v_" + os.urandom(8).hex()
-    r = _one_request(path, vid, timeout=8)
+    r = _one_request(path, vid, timeout=6)
     
     err_msg = str(r.get("error", "")) + str(r.get("message", ""))
     if "too fast" in err_msg.lower() or "finishing" in err_msg.lower() or "throttle" in err_msg.lower():
@@ -301,12 +301,12 @@ def solve_delta(link):
         tok = r.get("token")
         q = r.get("question", "")
         if not tok or not q:
-            c = _one_request("/api/challenge", "v_" + os.urandom(8).hex(), 8)
+            c = _one_request("/api/challenge", "v_" + os.urandom(8).hex(), 6)
             tok = tok or c.get("token")
             q = q or c.get("question", "")
         ans = arith(q)
         p = ("/api/solve?url=" + urllib.parse.quote(link, safe="") + "&ct=" + urllib.parse.quote(tok or "") + "&ca=" + urllib.parse.quote(ans))
-        r2 = _one_request(p, "v_" + os.urandom(8).hex(), 8)
+        r2 = _one_request(p, "v_" + os.urandom(8).hex(), 6)
         
         err_msg2 = str(r2.get("error", "")) + str(r2.get("message", ""))
         if "too fast" in err_msg2.lower() or "finishing" in err_msg2.lower() or "throttle" in err_msg2.lower():
@@ -324,7 +324,6 @@ async def process_request(url: str):
     start = time.monotonic()
     TOTAL_BUDGET = 19.0
     last_err = "Unknown Error"
-    net_retries = 0
     
     while True:
         remaining = TOTAL_BUDGET - (time.monotonic() - start)
@@ -345,12 +344,14 @@ async def process_request(url: str):
                 return {"key": key, "error": None}
             else:
                 last_err = str(res.get("error", "solve failed"))
-                if last_err in ("EMPTY", "NETWORK", "TIMEOUT"):
-                    net_retries += 1
-                    if net_retries >= 2:
-                        break
-                else:
-                    break
+                # 如果是 UPSTREAM_PENDING，直接秒退，不要去重试
+                if "PENDING" in last_err.upper():
+                    return {"key": None, "error": "UPSTREAM_PENDING"}
+                # 如果是无效链接，直接退
+                if "invalid url" in last_err.lower() or "expired" in last_err.lower():
+                    return {"key": None, "error": last_err}
+                # 其他错误直接退
+                break
         except ValueError as e:
             last_err = str(e)
             if "THROTTLE" in last_err:
@@ -370,7 +371,7 @@ async def process_request(url: str):
             
         await asyncio.sleep(min(wait_time, remaining))
 
-    return {"key": None, "error": f"Failed: {last_err}"}
+    return {"key": None, "error": last_err} # 去掉了Failed前缀，方便机器人判断
 
 async def _run_and_cleanup(url, task):
     try:

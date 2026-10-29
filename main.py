@@ -37,10 +37,8 @@ FPS = [{"l": "zh-CN", "p": "iPhone", "s": "428x926", "c": 4, "touch": True, "tz"
 CH_ERR = ("CHALLENGE_REQUIRED", "CHALLENGE_WRONG", "CHALLENGE_EXPIRED", "CHALLENGE_INVALID")
 FATAL = ("BANNED", "BOT_BLOCKED")
 
-# ================= 新增：24小时缓存机制 =================
 CACHE = {}
-CACHE_TTL = 86400  # 缓存有效期 24 小时（86400 秒）
-# =================================================
+CACHE_TTL = 86400
 
 def _hpack_int(n, bits, first):
     limit = (1 << bits) - 1
@@ -326,6 +324,7 @@ async def process_request(url: str):
     start = time.monotonic()
     TOTAL_BUDGET = 19.0
     last_err = "Unknown Error"
+    net_retries = 0
     
     while True:
         remaining = TOTAL_BUDGET - (time.monotonic() - start)
@@ -341,21 +340,29 @@ async def process_request(url: str):
             )
             if res.get("ok"):
                 key = res.get("key", "")
-                # ============== 新增：解成功立刻存缓存 ==============
                 if key:
                     CACHE[url] = {"key": key, "time": time.time()}
-                # =================================================
                 return {"key": key, "error": None}
             else:
                 last_err = str(res.get("error", "solve failed"))
+                if last_err in ("EMPTY", "NETWORK", "TIMEOUT"):
+                    net_retries += 1
+                    if net_retries >= 2:
+                        break
+                else:
+                    break
         except ValueError as e:
             last_err = str(e)
             if "THROTTLE" in last_err:
                 wait_time = 5.1
+            else:
+                break
         except asyncio.TimeoutError:
             last_err = "Timeout inside thread"
+            break
         except Exception as e:
             last_err = f"{type(e).__name__}: {str(e)}"
+            break
             
         remaining = TOTAL_BUDGET - (time.monotonic() - start)
         if remaining <= 0:
@@ -363,7 +370,7 @@ async def process_request(url: str):
             
         await asyncio.sleep(min(wait_time, remaining))
 
-    return {"key": None, "error": f"Failed after 19s, last error: {last_err}"}
+    return {"key": None, "error": f"Failed: {last_err}"}
 
 async def _run_and_cleanup(url, task):
     try:
@@ -379,16 +386,12 @@ def health_check():
 
 @app.get("/delta")
 async def delta(url: str = Query(...)):
-    # ============== 新增：秒级检查缓存 ==============
     if url in CACHE:
         cached_data = CACHE[url]
-        # 如果没到期（24小时内），直接返回，0秒出卡！
         if time.time() - cached_data["time"] < CACHE_TTL:
             return {"key": cached_data["key"], "error": None, "from_cache": True}
         else:
-            # 过期了，删掉旧缓存，重新去解
             del CACHE[url]
-    # ================================================
 
     async with _locks[url]:
         if url in _inflight:

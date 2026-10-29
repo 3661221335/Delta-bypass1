@@ -7,9 +7,7 @@ import socket
 import ssl
 import struct
 import urllib.parse
-import asyncio
 from fastapi import FastAPI, Query
-from fastapi.responses import StreamingResponse
 
 HOST = "delta-solve.app.workbuddy.host"
 H2_PREFACE = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
@@ -297,6 +295,8 @@ def solve_delta(link):
         
     if r.get("ok"):
         return r
+    if "PENDING" in err_msg.upper():
+        raise RuntimeError("PENDING")
     if r.get("error") in CH_ERR:
         tok = r.get("token")
         q = r.get("question", "")
@@ -311,6 +311,8 @@ def solve_delta(link):
         err_msg2 = str(r2.get("error", "")) + str(r2.get("message", ""))
         if "too fast" in err_msg2.lower() or "finishing" in err_msg2.lower() or "throttle" in err_msg2.lower():
             raise ValueError("THROTTLE")
+        if "PENDING" in err_msg2.upper():
+            raise RuntimeError("PENDING")
             
         return r2
     return r
@@ -321,59 +323,42 @@ app = FastAPI()
 def health_check():
     return {"status": "ok"}
 
-async def solve_stream(url: str):
-    start_time = time.time()
-    MAX_TIME = 18.0
-    
+@app.get("/delta")
+def delta(url: str = Query(...)):
     if url in CACHE:
-        cached = CACHE[url]
-        if time.time() - cached["time"] < CACHE_TTL:
-            yield json.dumps({"key": cached["key"], "error": None, "from_cache": True})
-            return
+        cached_data = CACHE[url]
+        if time.time() - cached_data["time"] < CACHE_TTL:
+            return {"key": cached_data["key"], "error": None, "from_cache": True}
         else:
             del CACHE[url]
 
-    while time.time() - start_time < MAX_TIME:
+    start_t = time.time()
+    MAX_TIME = 16.0
+    
+    while time.time() - start_t < MAX_TIME:
         try:
             res = solve_delta(url)
             if res.get("ok"):
                 key = res.get("key", "")
                 if key:
                     CACHE[url] = {"key": key, "time": time.time()}
-                yield json.dumps({"key": key, "error": None})
-                return
+                return {"key": key, "error": None}
             else:
-                err = str(res.get("error", "solve failed"))
-                if err == "NETWORK":
-                    yield b" " 
-                    await asyncio.sleep(0.5)
-                    continue
-                if "PENDING" in err.upper():
-                    yield b" "
-                    await asyncio.sleep(3.0)
-                    continue
-                if "invalid url" in err.lower() or "expired" in err.lower():
-                    yield json.dumps({"key": None, "error": err})
-                    return
-                yield json.dumps({"key": None, "error": err})
-                return
-
+                return {"key": None, "error": str(res.get("error", "失败"))}
+                
         except ValueError as e:
             if "THROTTLE" in str(e):
-                yield b" "
-                await asyncio.sleep(5.1)
+                remaining = MAX_TIME - (time.time() - start_t)
+                if remaining < 6:
+                    break
+                time.sleep(5.1)
                 continue
-            yield json.dumps({"key": None, "error": str(e)})
-            return
-        except Exception as e:
-            yield json.dumps({"key": None, "error": str(e)})
-            return
+            return {"key": None, "error": str(e)}
             
-        yield b" "
-        await asyncio.sleep(1.0)
+        except RuntimeError as e:
+            return {"key": None, "error": "链接正在处理中，请稍后再试"}
+            
+        except Exception as e:
+            return {"key": None, "error": str(e)}
 
-    yield json.dumps({"key": None, "error": "排队超时，请稍后再试"})
-
-@app.get("/delta")
-async def delta(url: str = Query(...)):
-    return StreamingResponse(solve_stream(url), media_type="text/plain")
+    return {"key": None, "error": "排队超时，请稍后再试"}

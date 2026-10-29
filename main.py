@@ -33,7 +33,6 @@ STATIC = [(":authority",""),(":method","GET"),(":method","POST"),(":path","/"),(
 UAS = ["Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1","Mozilla/5.0 (iPhone; CPU iPhone OS 17_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Mobile/15E148 Safari/604.1","Mozilla/5.0 (iPhone; CPU iPhone OS 18_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Mobile/15E148 Safari/604.1"]
 FPS = [{"l": "zh-CN", "p": "iPhone", "s": "428x926", "c": 4, "touch": True, "tz": "Asia/Shanghai"},{"l": "zh-CN", "p": "iPhone", "s": "390x844", "c": 6, "touch": True, "tz": "Asia/Shanghai"},{"l": "zh-CN", "p": "iPhone", "s": "393x852", "c": 6, "touch": True, "tz": "Asia/Shanghai"},{"l": "zh-CN", "p": "iPhone", "s": "430x932", "c": 6, "touch": True, "tz": "Asia/Shanghai"}]
 CH_ERR = ("CHALLENGE_REQUIRED", "CHALLENGE_WRONG", "CHALLENGE_EXPIRED", "CHALLENGE_INVALID")
-FATAL = ("BANNED", "BOT_BLOCKED")
 
 def _hpack_int(n, bits, first):
     limit = (1 << bits) - 1
@@ -309,7 +308,9 @@ def health_check():
 @app.get("/delta")
 def delta(url: str = Query(...)):
     start_time = time.time()
-    MAX_TIME = 12.0
+    MAX_TIME = 15.0
+    retry_count = 0
+    net_retry_count = 0
     
     while time.time() - start_time < MAX_TIME:
         try:
@@ -317,13 +318,34 @@ def delta(url: str = Query(...)):
             if res.get("ok"):
                 return {"key": res.get("key", ""), "error": None}
             
-            err_str = str(res).lower()
-            if "too fast" in err_str or "finishing" in err_str:
+            err_str = str(res.get("error", "")).lower()
+            msg_str = str(res.get("message", "")).lower()
+            full_err = err_str + " " + msg_str
+            
+            if "too fast" in full_err or "finishing" in full_err:
+                retry_count += 1
+                if retry_count > 1 or (MAX_TIME - (time.time() - start_time)) < 6:
+                    return {"key": None, "error": "请求过于频繁，请稍后再试"}
                 time.sleep(5.1)
                 continue
                 
+            if "network" in full_err or "empty" in full_err:
+                net_retry_count += 1
+                if net_retry_count > 3:
+                    return {"key": None, "error": "网络连接异常，请稍后再试"}
+                time.sleep(0.5)
+                continue
+                
+            if "pending" in full_err:
+                return {"key": None, "error": "链接正在处理中，请稍后再试"}
+                
             return {"key": None, "error": str(res.get("error", "未知错误"))}
+            
         except Exception as e:
-            return {"key": None, "error": str(e)}
+            net_retry_count += 1
+            if net_retry_count > 3:
+                return {"key": None, "error": "网络连接异常，请稍后再试"}
+            time.sleep(0.5)
+            continue
             
     return {"key": None, "error": "系统繁忙，请稍后再试"}

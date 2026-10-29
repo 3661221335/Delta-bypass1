@@ -8,7 +8,6 @@ import ssl
 import struct
 import urllib.parse
 import asyncio
-import functools
 from collections import defaultdict
 from fastapi import FastAPI, Query
 
@@ -37,6 +36,11 @@ UAS = ["Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1
 FPS = [{"l": "zh-CN", "p": "iPhone", "s": "428x926", "c": 4, "touch": True, "tz": "Asia/Shanghai"},{"l": "zh-CN", "p": "iPhone", "s": "390x844", "c": 6, "touch": True, "tz": "Asia/Shanghai"},{"l": "zh-CN", "p": "iPhone", "s": "393x852", "c": 6, "touch": True, "tz": "Asia/Shanghai"},{"l": "zh-CN", "p": "iPhone", "s": "430x932", "c": 6, "touch": True, "tz": "Asia/Shanghai"}]
 CH_ERR = ("CHALLENGE_REQUIRED", "CHALLENGE_WRONG", "CHALLENGE_EXPIRED", "CHALLENGE_INVALID")
 FATAL = ("BANNED", "BOT_BLOCKED")
+
+# ================= 新增：24小时缓存机制 =================
+CACHE = {}
+CACHE_TTL = 86400  # 缓存有效期 24 小时（86400 秒）
+# =================================================
 
 def _hpack_int(n, bits, first):
     limit = (1 << bits) - 1
@@ -174,7 +178,7 @@ class H2Error(Exception):
     pass
 
 class H2Client(object):
-    def __init__(self, host, port=443, timeout=8): # 调低底层超时
+    def __init__(self, host, port=443, timeout=8):
         self.host = host
         self.port = port
         self.timeout = timeout
@@ -226,7 +230,7 @@ def _hdrs(path, vid):
     fp = random.choice(FPS)
     return [(":method", "GET"), (":scheme", "https"), (":authority", HOST), (":path", path),("user-agent", random.choice(UAS)),("x-client-info", urllib.parse.quote(json.dumps(fp, separators=(",", ":")))),("accept", "application/json"),("accept-language", "zh-CN,zh-Hans;q=0.9"),("referer", "https://%s/" % HOST),("origin", "https://%s" % HOST),("sec-fetch-site", "same-origin"),("sec-fetch-mode", "cors"),("sec-fetch-dest", "empty"),("priority", "u=1, i"),("cookie", "ds_vid=" + vid)]
 
-def _one_request(path, vid, timeout=8): # 调低单次请求超时
+def _one_request(path, vid, timeout=8):
     c = H2Client(HOST, timeout=timeout)
     try:
         c.connect()
@@ -284,13 +288,11 @@ def arith(q):
         return str(a // b) if b else "0"
     return str(a + b)
 
-# 核心修改：加入主动限流异常抛出
 def solve_delta(link):
     path = "/api/solve?url=" + urllib.parse.quote(link, safe="")
     vid = "v_" + os.urandom(8).hex()
     r = _one_request(path, vid, timeout=8)
     
-    # 检测限流
     err_msg = str(r.get("error", "")) + str(r.get("message", ""))
     if "too fast" in err_msg.lower() or "finishing" in err_msg.lower() or "throttle" in err_msg.lower():
         raise ValueError("THROTTLE: " + err_msg)
@@ -317,7 +319,6 @@ def solve_delta(link):
 
 app = FastAPI()
 
-# 并发防限流锁
 _inflight = {}
 _locks = defaultdict(asyncio.Lock)
 
@@ -334,20 +335,22 @@ async def process_request(url: str):
         wait_time = 0.5
         try:
             loop = asyncio.get_running_loop()
-            # 利用线程池运行底层同步网络请求，防止阻塞 FastAPI
             res = await asyncio.wait_for(
                 loop.run_in_executor(None, solve_delta, url), 
                 timeout=remaining
             )
             if res.get("ok"):
-                return {"key": res.get("key", ""), "error": None}
+                key = res.get("key", "")
+                # ============== 新增：解成功立刻存缓存 ==============
+                if key:
+                    CACHE[url] = {"key": key, "time": time.time()}
+                # =================================================
+                return {"key": key, "error": None}
             else:
                 last_err = str(res.get("error", "solve failed"))
-                # 其他未知错误，等 0.5 秒快速重试
         except ValueError as e:
             last_err = str(e)
             if "THROTTLE" in last_err:
-                # 触发限流，必须等满 5.1 秒
                 wait_time = 5.1
         except asyncio.TimeoutError:
             last_err = "Timeout inside thread"
@@ -376,7 +379,17 @@ def health_check():
 
 @app.get("/delta")
 async def delta(url: str = Query(...)):
-    # 单飞机制：同一个 URL 同时只允许一个线程去请求上游
+    # ============== 新增：秒级检查缓存 ==============
+    if url in CACHE:
+        cached_data = CACHE[url]
+        # 如果没到期（24小时内），直接返回，0秒出卡！
+        if time.time() - cached_data["time"] < CACHE_TTL:
+            return {"key": cached_data["key"], "error": None, "from_cache": True}
+        else:
+            # 过期了，删掉旧缓存，重新去解
+            del CACHE[url]
+    # ================================================
+
     async with _locks[url]:
         if url in _inflight:
             task = _inflight[url]

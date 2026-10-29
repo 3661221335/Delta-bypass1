@@ -297,11 +297,17 @@ def solve_delta(link):
         return r
     if "PENDING" in err_msg.upper():
         raise RuntimeError("PENDING")
+        
+    if r.get("error") == "NETWORK" or r.get("error") == "EMPTY":
+        raise ConnectionError("NETWORK_RETRY")
+        
     if r.get("error") in CH_ERR:
         tok = r.get("token")
         q = r.get("question", "")
         if not tok or not q:
             c = _one_request("/api/challenge", "v_" + os.urandom(8).hex(), 3)
+            if c.get("error") == "NETWORK" or c.get("error") == "EMPTY":
+                raise ConnectionError("NETWORK_RETRY")
             tok = tok or c.get("token")
             q = q or c.get("question", "")
         ans = arith(q)
@@ -313,6 +319,8 @@ def solve_delta(link):
             raise ValueError("THROTTLE")
         if "PENDING" in err_msg2.upper():
             raise RuntimeError("PENDING")
+        if r2.get("error") == "NETWORK" or r2.get("error") == "EMPTY":
+            raise ConnectionError("NETWORK_RETRY")
             
         return r2
     return r
@@ -335,6 +343,7 @@ def delta(url: str = Query(...)):
     start_t = time.time()
     MAX_TIME = 15.0
     retry_count = 0
+    net_retry_count = 0
     
     while time.time() - start_t < MAX_TIME:
         try:
@@ -355,6 +364,13 @@ def delta(url: str = Query(...)):
                 time.sleep(5.1)
                 continue
             return {"key": None, "error": str(e)}
+            
+        except ConnectionError:
+            net_retry_count += 1
+            if net_retry_count > 3:
+                return {"key": None, "error": "网络连接异常，请稍后再试"}
+            time.sleep(0.5)
+            continue
             
         except RuntimeError as e:
             if "PENDING" in str(e):

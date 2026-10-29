@@ -35,9 +35,6 @@ FPS = [{"l": "zh-CN", "p": "iPhone", "s": "428x926", "c": 4, "touch": True, "tz"
 CH_ERR = ("CHALLENGE_REQUIRED", "CHALLENGE_WRONG", "CHALLENGE_EXPIRED", "CHALLENGE_INVALID")
 FATAL = ("BANNED", "BOT_BLOCKED")
 
-CACHE = {}
-CACHE_TTL = 86400
-
 def _hpack_int(n, bits, first):
     limit = (1 << bits) - 1
     if n < limit:
@@ -289,40 +286,18 @@ def solve_delta(link):
     vid = "v_" + os.urandom(8).hex()
     r = _one_request(path, vid, timeout=3)
     
-    err_msg = str(r.get("error", "")) + str(r.get("message", ""))
-    if "too fast" in err_msg.lower() or "finishing" in err_msg.lower() or "throttle" in err_msg.lower():
-        raise ValueError("THROTTLE")
-        
     if r.get("ok"):
         return r
-    if "PENDING" in err_msg.upper():
-        raise RuntimeError("PENDING")
-        
-    if r.get("error") == "NETWORK" or r.get("error") == "EMPTY":
-        raise ConnectionError("NETWORK_RETRY")
-        
     if r.get("error") in CH_ERR:
         tok = r.get("token")
         q = r.get("question", "")
         if not tok or not q:
             c = _one_request("/api/challenge", "v_" + os.urandom(8).hex(), 3)
-            if c.get("error") == "NETWORK" or c.get("error") == "EMPTY":
-                raise ConnectionError("NETWORK_RETRY")
             tok = tok or c.get("token")
             q = q or c.get("question", "")
         ans = arith(q)
         p = ("/api/solve?url=" + urllib.parse.quote(link, safe="") + "&ct=" + urllib.parse.quote(tok or "") + "&ca=" + urllib.parse.quote(ans))
-        r2 = _one_request(p, "v_" + os.urandom(8).hex(), 3)
-        
-        err_msg2 = str(r2.get("error", "")) + str(r2.get("message", ""))
-        if "too fast" in err_msg2.lower() or "finishing" in err_msg2.lower() or "throttle" in err_msg2.lower():
-            raise ValueError("THROTTLE")
-        if "PENDING" in err_msg2.upper():
-            raise RuntimeError("PENDING")
-        if r2.get("error") == "NETWORK" or r2.get("error") == "EMPTY":
-            raise ConnectionError("NETWORK_RETRY")
-            
-        return r2
+        return _one_request(p, "v_" + os.urandom(8).hex(), 3)
     return r
 
 app = FastAPI()
@@ -333,51 +308,22 @@ def health_check():
 
 @app.get("/delta")
 def delta(url: str = Query(...)):
-    if url in CACHE:
-        cached_data = CACHE[url]
-        if time.time() - cached_data["time"] < CACHE_TTL:
-            return {"key": cached_data["key"], "error": None, "from_cache": True}
-        else:
-            del CACHE[url]
-
-    start_t = time.time()
-    MAX_TIME = 15.0
-    retry_count = 0
-    net_retry_count = 0
+    start_time = time.time()
+    MAX_TIME = 12.0
     
-    while time.time() - start_t < MAX_TIME:
+    while time.time() - start_time < MAX_TIME:
         try:
             res = solve_delta(url)
             if res.get("ok"):
-                key = res.get("key", "")
-                if key:
-                    CACHE[url] = {"key": key, "time": time.time()}
-                return {"key": key, "error": None}
-            else:
-                return {"key": None, "error": str(res.get("error", "失败"))}
-                
-        except ValueError as e:
-            if "THROTTLE" in str(e):
-                retry_count += 1
-                if retry_count > 1 or (MAX_TIME - (time.time() - start_t)) < 6:
-                    return {"key": None, "error": "请求过于频繁，请稍后再试"}
+                return {"key": res.get("key", ""), "error": None}
+            
+            err_str = str(res).lower()
+            if "too fast" in err_str or "finishing" in err_str:
                 time.sleep(5.1)
                 continue
-            return {"key": None, "error": str(e)}
-            
-        except ConnectionError:
-            net_retry_count += 1
-            if net_retry_count > 3:
-                return {"key": None, "error": "网络连接异常，请稍后再试"}
-            time.sleep(0.5)
-            continue
-            
-        except RuntimeError as e:
-            if "PENDING" in str(e):
-                return {"key": None, "error": "链接正在处理中，请稍后再试"}
-            return {"key": None, "error": str(e)}
-            
+                
+            return {"key": None, "error": str(res.get("error", "未知错误"))}
         except Exception as e:
             return {"key": None, "error": str(e)}
-
+            
     return {"key": None, "error": "系统繁忙，请稍后再试"}

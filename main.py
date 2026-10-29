@@ -324,51 +324,28 @@ def delta(url: str = Query(...)):
         else:
             del CACHE[url]
 
-    start_time = time.time()
-    MAX_TIME = 15.0
-    retry_count = 0
-    net_retry_count = 0
-    
-    while time.time() - start_time < MAX_TIME:
-        try:
-            res = solve_delta(url)
-            if res.get("ok"):
-                key = res.get("key", "")
-                if key:
-                    CACHE[url] = {"key": key, "time": time.time()}
-                return {"key": key, "error": None, "elapsed": res.get("elapsed", 0)}
+    try:
+        res = solve_delta(url)
+        if res.get("ok"):
+            key = res.get("key", "")
+            if key:
+                CACHE[url] = {"key": key, "time": time.time()}
+            return {"key": key, "error": None, "elapsed": res.get("elapsed", 0)}
+        
+        err_str = str(res.get("error", "")).lower()
+        msg_str = str(res.get("message", "")).lower()
+        full_err = err_str + " " + msg_str
+        
+        if "too fast" in full_err or "finishing" in full_err:
+            return {"key": None, "error": "THROTTLE", "elapsed": 0}
             
-            err_str = str(res.get("error", "")).lower()
-            msg_str = str(res.get("message", "")).lower()
-            full_err = err_str + " " + msg_str
+        if "waf_block" in full_err or "pending" in full_err:
+            return {"key": None, "error": "invalid url", "elapsed": 0}
             
-            if "too fast" in full_err or "finishing" in full_err:
-                retry_count += 1
-                if retry_count > 1 or (MAX_TIME - (time.time() - start_time)) < 6:
-                    return {"key": None, "error": "请求过于频繁，请稍后再试", "elapsed": 0}
-                time.sleep(5.1)
-                continue
-                
-            if "waf_block" in full_err:
-                return {"key": None, "error": "invalid url", "elapsed": 0}
-                
-            if "network" in full_err or "empty" in full_err:
-                net_retry_count += 1
-                if net_retry_count > 3:
-                    return {"key": None, "error": "timeout", "elapsed": 0}
-                time.sleep(0.5)
-                continue
-                
-            if "pending" in full_err:
-                return {"key": None, "error": "invalid url", "elapsed": 0}
-                
-            return {"key": None, "error": str(res.get("error", "unknown")), "elapsed": 0}
+        if "network" in full_err or "empty" in full_err:
+            return {"key": None, "error": "timeout", "elapsed": 0}
             
-        except Exception as e:
-            net_retry_count += 1
-            if net_retry_count > 3:
-                return {"key": None, "error": "timeout", "elapsed": 0}
-            time.sleep(0.5)
-            continue
-            
-    return {"key": None, "error": "timeout", "elapsed": 0}
+        return {"key": None, "error": str(res.get("error", "unknown")), "elapsed": 0}
+        
+    except Exception as e:
+        return {"key": None, "error": "timeout", "elapsed": 0}

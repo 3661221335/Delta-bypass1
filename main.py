@@ -7,6 +7,9 @@ import socket
 import ssl
 import struct
 import urllib.parse
+import asyncio
+import functools
+from collections import defaultdict
 from fastapi import FastAPI, Query
 
 HOST = "delta-solve.app.workbuddy.host"
@@ -171,7 +174,7 @@ class H2Error(Exception):
     pass
 
 class H2Client(object):
-    def __init__(self, host, port=443, timeout=20):
+    def __init__(self, host, port=443, timeout=8): # 调低底层超时
         self.host = host
         self.port = port
         self.timeout = timeout
@@ -223,7 +226,7 @@ def _hdrs(path, vid):
     fp = random.choice(FPS)
     return [(":method", "GET"), (":scheme", "https"), (":authority", HOST), (":path", path),("user-agent", random.choice(UAS)),("x-client-info", urllib.parse.quote(json.dumps(fp, separators=(",", ":")))),("accept", "application/json"),("accept-language", "zh-CN,zh-Hans;q=0.9"),("referer", "https://%s/" % HOST),("origin", "https://%s" % HOST),("sec-fetch-site", "same-origin"),("sec-fetch-mode", "cors"),("sec-fetch-dest", "empty"),("priority", "u=1, i"),("cookie", "ds_vid=" + vid)]
 
-def _one_request(path, vid, timeout=25):
+def _one_request(path, vid, timeout=8): # 调低单次请求超时
     c = H2Client(HOST, timeout=timeout)
     try:
         c.connect()
@@ -281,40 +284,109 @@ def arith(q):
         return str(a // b) if b else "0"
     return str(a + b)
 
+# 核心修改：加入主动限流异常抛出
 def solve_delta(link):
     path = "/api/solve?url=" + urllib.parse.quote(link, safe="")
     vid = "v_" + os.urandom(8).hex()
-    r = _one_request(path, vid, timeout=25)
+    r = _one_request(path, vid, timeout=8)
+    
+    # 检测限流
+    err_msg = str(r.get("error", "")) + str(r.get("message", ""))
+    if "too fast" in err_msg.lower() or "finishing" in err_msg.lower() or "throttle" in err_msg.lower():
+        raise ValueError("THROTTLE: " + err_msg)
+        
     if r.get("ok"):
         return r
     if r.get("error") in CH_ERR:
         tok = r.get("token")
         q = r.get("question", "")
         if not tok or not q:
-            c = _one_request("/api/challenge", "v_" + os.urandom(8).hex(), 25)
+            c = _one_request("/api/challenge", "v_" + os.urandom(8).hex(), 8)
             tok = tok or c.get("token")
             q = q or c.get("question", "")
         ans = arith(q)
         p = ("/api/solve?url=" + urllib.parse.quote(link, safe="") + "&ct=" + urllib.parse.quote(tok or "") + "&ca=" + urllib.parse.quote(ans))
-        return _one_request(p, "v_" + os.urandom(8).hex(), 25)
+        r2 = _one_request(p, "v_" + os.urandom(8).hex(), 8)
+        
+        err_msg2 = str(r2.get("error", "")) + str(r2.get("message", ""))
+        if "too fast" in err_msg2.lower() or "finishing" in err_msg2.lower() or "throttle" in err_msg2.lower():
+            raise ValueError("THROTTLE: " + err_msg2)
+            
+        return r2
     return r
 
 app = FastAPI()
+
+# 并发防限流锁
+_inflight = {}
+_locks = defaultdict(asyncio.Lock)
+
+async def process_request(url: str):
+    start = time.monotonic()
+    TOTAL_BUDGET = 19.0
+    last_err = "Unknown Error"
+    
+    while True:
+        remaining = TOTAL_BUDGET - (time.monotonic() - start)
+        if remaining <= 0:
+            break
+            
+        wait_time = 0.5
+        try:
+            loop = asyncio.get_running_loop()
+            # 利用线程池运行底层同步网络请求，防止阻塞 FastAPI
+            res = await asyncio.wait_for(
+                loop.run_in_executor(None, solve_delta, url), 
+                timeout=remaining
+            )
+            if res.get("ok"):
+                return {"key": res.get("key", ""), "error": None}
+            else:
+                last_err = str(res.get("error", "solve failed"))
+                # 其他未知错误，等 0.5 秒快速重试
+        except ValueError as e:
+            last_err = str(e)
+            if "THROTTLE" in last_err:
+                # 触发限流，必须等满 5.1 秒
+                wait_time = 5.1
+        except asyncio.TimeoutError:
+            last_err = "Timeout inside thread"
+        except Exception as e:
+            last_err = f"{type(e).__name__}: {str(e)}"
+            
+        remaining = TOTAL_BUDGET - (time.monotonic() - start)
+        if remaining <= 0:
+            break
+            
+        await asyncio.sleep(min(wait_time, remaining))
+
+    return {"key": None, "error": f"Failed after 19s, last error: {last_err}"}
+
+async def _run_and_cleanup(url, task):
+    try:
+        return await task
+    finally:
+        async with _locks[url]:
+            if _inflight.get(url) is task:
+                del _inflight[url]
 
 @app.get("/health")
 def health_check():
     return {"status": "ok"}
 
 @app.get("/delta")
-def delta(url: str = Query(...)):
-    try:
-        data = solve_delta(url)
-        if data.get("ok"):
-            return {"key": data.get("key", ""), "error": None}
-        return {
-            "key": None, 
-            "error": str(data.get("error", "solve failed")),
-            "message": str(data.get("message", ""))
-        }
-    except Exception as e:
-        return {"key": None, "error": f"solve exception: {type(e).__name__} - {str(e)}"}
+async def delta(url: str = Query(...)):
+    # 单飞机制：同一个 URL 同时只允许一个线程去请求上游
+    async with _locks[url]:
+        if url in _inflight:
+            task = _inflight[url]
+            is_new = False
+        else:
+            task = asyncio.create_task(process_request(url))
+            _inflight[url] = task
+            is_new = True
+            
+    if is_new:
+        return await _run_and_cleanup(url, task)
+    else:
+        return await task

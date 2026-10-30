@@ -173,7 +173,7 @@ class H2Error(Exception):
     pass
 
 class H2Client(object):
-    def __init__(self, host, port=443, timeout=3):
+    def __init__(self, host, port=443, timeout=4):
         self.host = host
         self.port = port
         self.timeout = timeout
@@ -225,7 +225,7 @@ def _hdrs(path, vid):
     fp = random.choice(FPS)
     return [(":method", "GET"), (":scheme", "https"), (":authority", HOST), (":path", path),("user-agent", random.choice(UAS)),("x-client-info", urllib.parse.quote(json.dumps(fp, separators=(",", ":")))),("accept", "application/json"),("accept-language", "zh-CN,zh-Hans;q=0.9"),("referer", "https://%s/" % HOST),("origin", "https://%s" % HOST),("sec-fetch-site", "same-origin"),("sec-fetch-mode", "cors"),("sec-fetch-dest", "empty"),("priority", "u=1, i"),("cookie", "ds_vid=" + vid)]
 
-def _one_request(path, vid, timeout=3):
+def _one_request(path, vid, timeout=4):
     c = H2Client(HOST, timeout=timeout)
     try:
         c.connect()
@@ -287,7 +287,7 @@ def solve_delta(link):
     start_t = time.time()
     path = "/api/solve?url=" + urllib.parse.quote(link, safe="")
     vid = "v_" + os.urandom(8).hex()
-    r = _one_request(path, vid, timeout=3)
+    r = _one_request(path, vid, timeout=4)
     req_time = round(time.time() - start_t, 2)
     
     if r.get("ok"):
@@ -298,12 +298,12 @@ def solve_delta(link):
         tok = r.get("token")
         q = r.get("question", "")
         if not tok or not q:
-            c = _one_request("/api/challenge", "v_" + os.urandom(8).hex(), 3)
+            c = _one_request("/api/challenge", "v_" + os.urandom(8).hex(), 4)
             tok = tok or c.get("token")
             q = q or c.get("question", "")
         ans = arith(q)
         p = ("/api/solve?url=" + urllib.parse.quote(link, safe="") + "&ct=" + urllib.parse.quote(tok or "") + "&ca=" + urllib.parse.quote(ans))
-        r2 = _one_request(p, "v_" + os.urandom(8).hex(), 3)
+        r2 = _one_request(p, "v_" + os.urandom(8).hex(), 4)
         if r2.get("ok"):
             r2["elapsed"] = round(time.time() - start_t2, 2)
         return r2

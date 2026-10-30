@@ -320,7 +320,7 @@ def delta(url: str = Query(...)):
     if url in CACHE:
         cached_data = CACHE[url]
         if time.time() - cached_data["time"] < CACHE_TTL:
-            return {"key": cached_data["key"], "error": None, "elapsed": 0.01}
+            return {"key": cached_data["key"], "error": None, "elapsed": cached_data["elapsed"]}
         else:
             del CACHE[url]
 
@@ -328,9 +328,10 @@ def delta(url: str = Query(...)):
         res = solve_delta(url)
         if res.get("ok"):
             key = res.get("key", "")
+            real_elapsed = res.get("elapsed", 0)
             if key:
-                CACHE[url] = {"key": key, "time": time.time()}
-            return {"key": key, "error": None, "elapsed": res.get("elapsed", 0)}
+                CACHE[url] = {"key": key, "time": time.time(), "elapsed": real_elapsed}
+            return {"key": key, "error": None, "elapsed": real_elapsed}
         
         err_str = str(res.get("error", "")).lower()
         msg_str = str(res.get("message", "")).lower()

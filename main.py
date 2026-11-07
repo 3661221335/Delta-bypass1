@@ -322,8 +322,8 @@ def solve_lootlabs(link):
 
         html = res.text
         
-        direct_match = re.search(r'https?://[^\s"\'<>]+', html)
-        if direct_match and "lootlabs.gg" not in direct_match.group(0):
+        direct_match = re.search(r'https?://(?!lootlabs|auth\.platorelay)[^\s"\'<>]+', html)
+        if direct_match:
             return {"ok": True, "key": direct_match.group(0), "elapsed": round(time.time() - start_t, 2)}
 
         ws_url_match = re.search(r'wss://[^\s"\'<>]+', html)
@@ -332,18 +332,31 @@ def solve_lootlabs(link):
             
         ws_url = ws_url_match.group(0)
         ws = websocket.create_connection(ws_url, timeout=10)
-        ws.send(json.dumps({"type": "verify", "payload": {}}))
         
         try:
+            payload = json.dumps({
+                "type": "verify",
+                "payload": {
+                    "botd": "spoofed",
+                    "timestamp": int(time.time() * 1000)
+                }
+            })
+            ws.send(payload)
             result = ws.recv()
             ws.close()
+            
             data = json.loads(result)
             if "url" in data:
                 return {"ok": True, "key": data["url"], "elapsed": round(time.time() - start_t, 2)}
-        except:
-            ws.close()
-            
-        return {"ok": False, "error": "LOOTLABS_FAILED", "message": "WebSocket 验证失败，可能需要更新指纹", "elapsed": 0}
+            elif "destination" in data:
+                 return {"ok": True, "key": data["destination"], "elapsed": round(time.time() - start_t, 2)}
+                 
+        except Exception as inner_e:
+            try: ws.close()
+            except: pass
+            return {"ok": False, "error": "LOOTLABS_WS_FAILED", "message": str(inner_e), "elapsed": 0}
+
+        return {"ok": False, "error": "LOOTLABS_FAILED", "message": "WebSocket 验证失败", "elapsed": 0}
         
     except Exception as e:
         return {"ok": False, "error": "LOOTLABS_EXCEPTION", "message": str(e), "elapsed": 0}
@@ -356,14 +369,14 @@ def health_check():
 
 @app.get("/delta")
 def delta(url: str = Query(...)):
-    try:
-        if url in CACHE:
-            cached_data = CACHE[url]
-            if time.time() - cached_data["time"] < CACHE_TTL:
-                return {"key": cached_data["key"], "error": None, "elapsed": cached_data["elapsed"]}
-            else:
-                del CACHE[url]
+    if url in CACHE:
+        cached_data = CACHE[url]
+        if time.time() - cached_data["time"] < CACHE_TTL:
+            return {"key": cached_data["key"], "error": None, "elapsed": cached_data["elapsed"]}
+        else:
+            del CACHE[url]
 
+    try:
         if "lootlabs" in url or "loot-link" in url:
             res = solve_lootlabs(url)
         else:
@@ -392,4 +405,4 @@ def delta(url: str = Query(...)):
         return {"key": None, "error": str(res.get("error", "unknown")), "elapsed": 0}
         
     except Exception as e:
-        return {"key": None, "error": f"引擎捕获异常: {str(e)}", "elapsed": 0}
+        return {"key": None, "error": f"引擎异常: {str(e)}", "elapsed": 0}

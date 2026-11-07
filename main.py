@@ -8,7 +8,6 @@ import ssl
 import struct
 import urllib.parse
 from fastapi import FastAPI, Query
-from loot_solver import solve_lootlabs_core
 
 HOST = "delta-solve.app.workbuddy.host"
 H2_PREFACE = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
@@ -326,10 +325,7 @@ def delta(url: str = Query(...)):
             del CACHE[url]
 
     try:
-        if "lootlabs" in url or "loot-link" in url:
-            res = solve_lootlabs_core(url)
-        else:
-            res = solve_delta(url)
+        res = solve_delta(url)
 
         if res.get("ok"):
             key = res.get("key", "")

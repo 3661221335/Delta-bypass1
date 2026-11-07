@@ -10,6 +10,9 @@ import urllib.parse
 from fastapi import FastAPI, Query
 import websocket
 from curl_cffi import requests as cffi_requests
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+import base64
+import secrets
 
 HOST = "delta-solve.app.workbuddy.host"
 H2_PREFACE = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
@@ -327,8 +330,12 @@ def solve_lootlabs(link):
 
     try:
         session = cffi_requests.Session(impersonate="chrome124")
-        res = session.get(link, headers=headers, timeout=15)
+        res = session.get(link, headers=headers, timeout=15, allow_redirects=True)
         
+        if res.status_code == 204:
+            time.sleep(1.5)
+            res = session.get(link, headers=headers, timeout=15, allow_redirects=True)
+            
         if res.status_code != 200:
             return {
                 "ok": False, 
@@ -359,14 +366,23 @@ def solve_lootlabs(link):
         ws = websocket.create_connection(ws_url, timeout=10, header=ws_headers)
         
         try:
+            data_to_encrypt = json.dumps({
+                "botd": "spoofed",
+                "timestamp": int(time.time() * 1000),
+                "fingerprint": "Chrome124_Windows_1920x1080"
+            }).encode('utf-8')
+            
+            aes_key = b"00000000000000000000000000000000"
+            aes_iv = secrets.token_bytes(12)
+            aesgcm = AESGCM(aes_key)
+            ciphertext = aesgcm.encrypt(aes_iv, data_to_encrypt, None)
+            encrypted_payload = base64.b64encode(aes_iv + ciphertext).decode('utf-8')
+            
             payload = json.dumps({
                 "type": "verify",
-                "payload": {
-                    "botd": "spoofed",
-                    "timestamp": int(time.time() * 1000),
-                    "fingerprint": "Chrome124_Windows_1920x1080"
-                }
+                "payload": encrypted_payload
             })
+            
             ws.send(payload)
             result = ws.recv()
             ws.close()

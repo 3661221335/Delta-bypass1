@@ -345,11 +345,10 @@ def solve_lootlabs(link):
             res = session.get(link, headers=headers, timeout=15, allow_redirects=True)
             
         if res.status_code != 200:
-            resp_headers = dict(res.headers)
             return {
                 "ok": False, 
                 "error": f"HTTP_{res.status_code}", 
-                "message": f"Headers: {resp_headers}",
+                "message": f"Headers: {dict(res.headers)}",
                 "elapsed": round(time.time() - start_t, 2)
             }
 

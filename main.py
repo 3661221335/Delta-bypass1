@@ -6,11 +6,10 @@ import re
 import socket
 import ssl
 import struct
-import base64
 import urllib.parse
+import cloudscraper
+import websocket
 from fastapi import FastAPI, Query
-from pydantic import BaseModel
-from typing import List
 
 HOST = "delta-solve.app.workbuddy.host"
 H2_PREFACE = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
@@ -36,7 +35,9 @@ STATIC = [(":authority",""),(":method","GET"),(":method","POST"),(":path","/"),(
 UAS = ["Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1","Mozilla/5.0 (iPhone; CPU iPhone OS 17_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Mobile/15E148 Safari/604.1","Mozilla/5.0 (iPhone; CPU iPhone OS 18_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Mobile/15E148 Safari/604.1"]
 FPS = [{"l": "zh-CN", "p": "iPhone", "s": "428x926", "c": 4, "touch": True, "tz": "Asia/Shanghai"},{"l": "zh-CN", "p": "iPhone", "s": "390x844", "c": 6, "touch": True, "tz": "Asia/Shanghai"},{"l": "zh-CN", "p": "iPhone", "s": "393x852", "c": 6, "touch": True, "tz": "Asia/Shanghai"},{"l": "zh-CN", "p": "iPhone", "s": "430x932", "c": 6, "touch": True, "tz": "Asia/Shanghai"}]
 CH_ERR = ("CHALLENGE_REQUIRED", "CHALLENGE_WRONG", "CHALLENGE_EXPIRED", "CHALLENGE_INVALID")
-FATAL = ("BANNED", "BOT_BLOCKED")
+
+CACHE = {}
+CACHE_TTL = 86400
 
 def _hpack_int(n, bits, first):
     limit = (1 << bits) - 1
@@ -174,7 +175,7 @@ class H2Error(Exception):
     pass
 
 class H2Client(object):
-    def __init__(self, host, port=443, timeout=20):
+    def __init__(self, host, port=443, timeout=4):
         self.host = host
         self.port = port
         self.timeout = timeout
@@ -192,30 +193,8 @@ class H2Client(object):
             pass
         return ctx
     def connect(self):
-        proxy_url = os.environ.get("PROXY_LIST")
-        if proxy_url:
-            parsed = urllib.parse.urlparse(proxy_url)
-            proxy_host = parsed.hostname
-            proxy_port = parsed.port or 80
-            proxy_user = parsed.username or ""
-            proxy_pass = parsed.password or ""
-            raw = socket.create_connection((proxy_host, proxy_port), timeout=self.timeout)
-            auth_str = f"{proxy_user}:{proxy_pass}"
-            auth_b64 = base64.b64encode(auth_str.encode()).decode()
-            connect_req = f"CONNECT {self.host}:{self.port} HTTP/1.1\r\nHost: {self.host}:{self.port}\r\nProxy-Authorization: Basic {auth_b64}\r\n\r\n"
-            raw.sendall(connect_req.encode())
-            resp = b""
-            while b"\r\n\r\n" not in resp:
-                chunk = raw.recv(1024)
-                if not chunk:
-                    break
-                resp += chunk
-            if b"200" not in resp.split(b"\r\n")[0]:
-                raise H2Error(f"Proxy CONNECT failed: {resp.decode('utf-8', 'ignore')}")
-            self.sock = self._ctx().wrap_socket(raw, server_hostname=self.host)
-        else:
-            raw = socket.create_connection((self.host, self.port), timeout=self.timeout)
-            self.sock = self._ctx().wrap_socket(raw, server_hostname=self.host)
+        raw = socket.create_connection((self.host, self.port), timeout=self.timeout)
+        self.sock = self._ctx().wrap_socket(raw, server_hostname=self.host)
         self.sock.sendall(H2_PREFACE)
         self._send_frame(FRAME_SETTINGS, 0, b"")
     def _send_frame(self, ftype, flags, payload, stream=0):
@@ -248,7 +227,7 @@ def _hdrs(path, vid):
     fp = random.choice(FPS)
     return [(":method", "GET"), (":scheme", "https"), (":authority", HOST), (":path", path),("user-agent", random.choice(UAS)),("x-client-info", urllib.parse.quote(json.dumps(fp, separators=(",", ":")))),("accept", "application/json"),("accept-language", "zh-CN,zh-Hans;q=0.9"),("referer", "https://%s/" % HOST),("origin", "https://%s" % HOST),("sec-fetch-site", "same-origin"),("sec-fetch-mode", "cors"),("sec-fetch-dest", "empty"),("priority", "u=1, i"),("cookie", "ds_vid=" + vid)]
 
-def _one_request(path, vid, timeout=25):
+def _one_request(path, vid, timeout=4):
     c = H2Client(HOST, timeout=timeout)
     try:
         c.connect()
@@ -307,100 +286,112 @@ def arith(q):
     return str(a + b)
 
 def solve_delta(link):
+    start_t = time.time()
     path = "/api/solve?url=" + urllib.parse.quote(link, safe="")
     vid = "v_" + os.urandom(8).hex()
-    r = _one_request(path, vid, timeout=25)
+    r = _one_request(path, vid, timeout=4)
+    req_time = round(time.time() - start_t, 2)
+    
     if r.get("ok"):
+        r["elapsed"] = req_time
         return r
     if r.get("error") in CH_ERR:
+        start_t2 = time.time()
         tok = r.get("token")
         q = r.get("question", "")
         if not tok or not q:
-            c = _one_request("/api/challenge", "v_" + os.urandom(8).hex(), 25)
+            c = _one_request("/api/challenge", "v_" + os.urandom(8).hex(), 4)
             tok = tok or c.get("token")
             q = q or c.get("question", "")
         ans = arith(q)
         p = ("/api/solve?url=" + urllib.parse.quote(link, safe="") + "&ct=" + urllib.parse.quote(tok or "") + "&ca=" + urllib.parse.quote(ans))
-        return _one_request(p, "v_" + os.urandom(8).hex(), 25)
+        r2 = _one_request(p, "v_" + os.urandom(8).hex(), 4)
+        if r2.get("ok"):
+            r2["elapsed"] = round(time.time() - start_t2, 2)
+        return r2
     return r
+
+
+def solve_lootlabs(link):
+    start_t = time.time()
+    try:
+        scraper = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False})
+        res = scraper.get(link, timeout=10)
+        
+        if res.status_code != 200:
+            return {"ok": False, "error": "HTTP_ERROR", "message": f"Lootlabs HTTP {res.status_code}"}
+
+        html = res.text
+        
+        direct_match = re.search(r'https?://[^\s"\'<>]+', html)
+        if direct_match and "lootlabs.gg" not in direct_match.group(0):
+            return {"ok": True, "key": direct_match.group(0), "elapsed": round(time.time() - start_t, 2)}
+
+        ws_url_match = re.search(r'wss://[^\s"\'<>]+', html)
+        if not ws_url_match:
+            return {"ok": False, "error": "LOOTLABS_PARSE_FAILED", "message": "找不到 WebSocket 连接或直链", "elapsed": 0}
+            
+        ws_url = ws_url_match.group(0)
+        ws = websocket.create_connection(ws_url, timeout=10)
+        ws.send(json.dumps({"type": "verify", "payload": {}}))
+        
+        try:
+            result = ws.recv()
+            ws.close()
+            data = json.loads(result)
+            if "url" in data:
+                return {"ok": True, "key": data["url"], "elapsed": round(time.time() - start_t, 2)}
+        except:
+            ws.close()
+            
+        return {"ok": False, "error": "LOOTLABS_FAILED", "message": "WebSocket 验证失败，可能需要更新指纹", "elapsed": 0}
+        
+    except Exception as e:
+        return {"ok": False, "error": "LOOTLABS_EXCEPTION", "message": str(e), "elapsed": 0}
+
 
 app = FastAPI()
 
 @app.get("/health")
-@app.get("/healthz")
-@app.get("/")
 def health_check():
     return {"status": "ok"}
 
 @app.get("/delta")
 def delta(url: str = Query(...)):
-    try:
-        data = solve_delta(url)
-        if data.get("ok"):
-            return {"key": data.get("key", ""), "error": None}
-        return {"key": None, "error": str(data.get("error", "solve failed"))}
-    except Exception as e:
-        return {"key": None, "error": f"solve exception: {type(e).__name__} - {str(e)}"}
-
-class ChatMessage(BaseModel):
-    role: str
-    content: str
-
-class ChatCompletionRequest(BaseModel):
-    model: str
-    messages: List[ChatMessage]
-
-@app.post("/v1/chat/completions")
-async def chat_completions(req: ChatCompletionRequest):
-    user_text = ""
-    for msg in req.messages:
-        if msg.role == "user":
-            user_text = msg.content
-            break
-
-    url_match = re.search(r'https?://[^\s]+', user_text)
-    if not url_match:
-        if "Calculate and respond with ONLY the number" in user_text:
-            exprs = re.findall(r'(\d+)\s*([+\-*/])\s*(\d+)\s*=\s*\?', user_text)
-            if exprs:
-                a, op, b = exprs[-1]
-                a, b = int(a), int(b)
-                if op == '+':
-                    content = str(a + b)
-                elif op == '-':
-                    content = str(a - b)
-                elif op == '*':
-                    content = str(a * b)
-                else:
-                    content = str(a // b) if b else "0"
-            else:
-                content = user_text
+    if url in CACHE:
+        cached_data = CACHE[url]
+        if time.time() - cached_data["time"] < CACHE_TTL:
+            return {"key": cached_data["key"], "error": None, "elapsed": cached_data["elapsed"]}
         else:
-            content = user_text
-    else:
-        target = url_match.group(0)
-        try:
-            result = solve_delta(target)
-            if result.get("ok"):
-                content = f"解卡成功！\nKey: {result.get('key', '')}"
-            else:
-                content = f"解卡失败：{result.get('error', '未知错误')}"
-        except Exception as e:
-            content = f"解卡出错：{str(e)}"
+            del CACHE[url]
 
-    return {
-        "id": "chatcmpl-001",
-        "object": "chat.completion",
-        "created": 1234567890,
-        "model": req.model,
-        "choices": [{
-            "index": 0,
-            "message": {"role": "assistant", "content": content},
-            "finish_reason": "stop"
-        }],
-        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
-    }
+    try:
+        if "lootlabs" in url or "loot-link" in url:
+            res = solve_lootlabs(url)
+        else:
+            res = solve_delta(url)
 
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+        if res.get("ok"):
+            key = res.get("key", "")
+            real_elapsed = res.get("elapsed", 0)
+            if key:
+                CACHE[url] = {"key": key, "time": time.time(), "elapsed": real_elapsed}
+            return {"key": key, "error": None, "elapsed": real_elapsed}
+        
+        err_str = str(res.get("error", "")).lower()
+        msg_str = str(res.get("message", "")).lower()
+        full_err = err_str + " " + msg_str
+        
+        if "too fast" in full_err or "finishing" in full_err:
+            return {"key": None, "error": "THROTTLE", "elapsed": 0}
+            
+        if "waf_block" in full_err or "pending" in full_err:
+            return {"key": None, "error": "invalid url", "elapsed": 0}
+            
+        if "network" in full_err or "empty" in full_err:
+            return {"key": None, "error": "timeout", "elapsed": 0}
+            
+        return {"key": None, "error": str(res.get("error", "unknown")), "elapsed": 0}
+        
+    except Exception as e:
+        return {"key": None, "error": "timeout", "elapsed": 0}

@@ -1,5 +1,2 @@
 fastapi
 uvicorn
-websocket-client
-cryptography
-requests

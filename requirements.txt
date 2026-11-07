@@ -4,3 +4,4 @@ curl_cffi
 websocket-client
 cryptography
 brotli
+beautifulsoup4

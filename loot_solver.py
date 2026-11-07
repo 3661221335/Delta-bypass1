@@ -7,21 +7,31 @@ import base64
 import secrets
 import requests
 
+PROXY_HOST = "global.lycheeip.com"
+PROXY_PORT = 10000
+PROXY_USER = "PR3QPWg8NP6-zone-custom-region-US-st-WestVirginia"
+PROXY_PASS = "2c39c20068fb"
+
+PROXY_URL = f"http://{PROXY_USER}:{PROXY_PASS}@{PROXY_HOST}:{PROXY_PORT}"
+
 def solve_lootlabs_core(link: str):
     start_t = time.time()
+    
+    proxies = {
+        "http": PROXY_URL,
+        "https": PROXY_URL
+    }
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    }
+
     try:
         session = requests.Session()
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-            "Sec-Ch-Ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
-            "Sec-Fetch-Dest": "document",
-            "Sec-Fetch-Mode": "navigate",
-            "Sec-Fetch-Site": "none",
-            "Upgrade-Insecure-Requests": "1"
-        }
         session.headers.update(headers)
+        session.proxies.update(proxies)
         
         try:
             session.get("https://lootlabs.gg/", timeout=10)
@@ -71,7 +81,14 @@ def solve_lootlabs_core(link: str):
             f"User-Agent: {headers['User-Agent']}"
         ]
         
-        ws = websocket.create_connection(ws_url, timeout=10, header=ws_headers)
+        ws = websocket.create_connection(
+            ws_url, 
+            timeout=10, 
+            header=ws_headers,
+            http_proxy_host=PROXY_HOST,
+            http_proxy_port=PROXY_PORT,
+            http_proxy_auth=(PROXY_USER, PROXY_PASS)
+        )
         
         try:
             botd_data = json.dumps({

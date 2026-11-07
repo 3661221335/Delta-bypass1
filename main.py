@@ -7,9 +7,9 @@ import socket
 import ssl
 import struct
 import urllib.parse
-import cloudscraper
-import websocket
 from fastapi import FastAPI, Query
+import websocket
+from curl_cffi import requests as cffi_requests
 
 HOST = "delta-solve.app.workbuddy.host"
 H2_PREFACE = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
@@ -313,32 +313,58 @@ def solve_delta(link):
 
 def solve_lootlabs(link):
     start_t = time.time()
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        "Sec-Ch-Ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
+        "Upgrade-Insecure-Requests": "1"
+    }
+
     try:
-        scraper = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False})
-        res = scraper.get(link, timeout=10)
+        session = cffi_requests.Session(impersonate="chrome124")
+        res = session.get(link, headers=headers, timeout=15)
         
         if res.status_code != 200:
-            return {"ok": False, "error": "HTTP_ERROR", "message": f"Lootlabs HTTP {res.status_code}"}
+            return {
+                "ok": False, 
+                "error": f"HTTP_{res.status_code}", 
+                "message": f"Body: {res.text[:100]}",
+                "elapsed": round(time.time() - start_t, 2)
+            }
 
         html = res.text
         
-        direct_match = re.search(r'https?://(?!lootlabs|auth\.platorelay)[^\s"\'<>]+', html)
-        if direct_match:
-            return {"ok": True, "key": direct_match.group(0), "elapsed": round(time.time() - start_t, 2)}
+        direct_matches = re.findall(r'https?://(?!lootlabs|auth\.platorelay)[^\s"\'<>\\]+', html)
+        if direct_matches:
+            for url in direct_matches:
+                if not any(url.endswith(ext) for ext in ['.js', '.css', '.png', '.jpg', '.svg']):
+                    return {"ok": True, "key": url, "elapsed": round(time.time() - start_t, 2)}
 
         ws_url_match = re.search(r'wss://[^\s"\'<>]+', html)
         if not ws_url_match:
-            return {"ok": False, "error": "LOOTLABS_PARSE_FAILED", "message": "找不到 WebSocket 连接或直链", "elapsed": 0}
+            return {"ok": False, "error": "LOOTLABS_PARSE_FAILED", "message": "No WS or link", "elapsed": 0}
             
-        ws_url = ws_url_match.group(0)
-        ws = websocket.create_connection(ws_url, timeout=10)
+        ws_url = ws_url_match.group(0).replace('\\/', '/')
+        
+        ws_headers = [
+            "Origin: https://lootlabs.gg",
+            f"User-Agent: {headers['User-Agent']}"
+        ]
+        
+        ws = websocket.create_connection(ws_url, timeout=10, header=ws_headers)
         
         try:
             payload = json.dumps({
                 "type": "verify",
                 "payload": {
                     "botd": "spoofed",
-                    "timestamp": int(time.time() * 1000)
+                    "timestamp": int(time.time() * 1000),
+                    "fingerprint": "Chrome124_Windows_1920x1080"
                 }
             })
             ws.send(payload)
@@ -350,16 +376,16 @@ def solve_lootlabs(link):
                 return {"ok": True, "key": data["url"], "elapsed": round(time.time() - start_t, 2)}
             elif "destination" in data:
                  return {"ok": True, "key": data["destination"], "elapsed": round(time.time() - start_t, 2)}
+            else:
+                return {"ok": False, "error": "WS_REJECTED", "message": str(result), "elapsed": 0}
                  
         except Exception as inner_e:
             try: ws.close()
             except: pass
-            return {"ok": False, "error": "LOOTLABS_WS_FAILED", "message": str(inner_e), "elapsed": 0}
+            return {"ok": False, "error": "LOOTLABS_WS_EXCEPTION", "message": str(inner_e), "elapsed": 0}
 
-        return {"ok": False, "error": "LOOTLABS_FAILED", "message": "WebSocket 验证失败", "elapsed": 0}
-        
     except Exception as e:
-        return {"ok": False, "error": "LOOTLABS_EXCEPTION", "message": str(e), "elapsed": 0}
+        return {"ok": False, "error": "LOOTLABS_NETWORK_ERR", "message": str(e), "elapsed": 0}
 
 app = FastAPI()
 
@@ -405,4 +431,8 @@ def delta(url: str = Query(...)):
         return {"key": None, "error": str(res.get("error", "unknown")), "elapsed": 0}
         
     except Exception as e:
-        return {"key": None, "error": f"引擎异常: {str(e)}", "elapsed": 0}
+        return {"key": None, "error": f"err: {str(e)}", "elapsed": 0}
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)

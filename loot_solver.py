@@ -6,6 +6,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 import base64
 import secrets
 import requests
+from requests.exceptions import ProxyError, ConnectTimeout, Timeout
 
 PROXY_HOST = "global.lycheeip.com"
 PROXY_PORT = 10000
@@ -14,13 +15,15 @@ PROXY_PASS = "2c39c20068fb"
 
 PROXY_URL = f"http://{PROXY_USER}:{PROXY_PASS}@{PROXY_HOST}:{PROXY_PORT}"
 
+USE_PROXY = True
+
 def solve_lootlabs_core(link: str):
     start_t = time.time()
     
     proxies = {
         "http": PROXY_URL,
         "https": PROXY_URL
-    }
+    } if USE_PROXY else None
     
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -31,7 +34,8 @@ def solve_lootlabs_core(link: str):
     try:
         session = requests.Session()
         session.headers.update(headers)
-        session.proxies.update(proxies)
+        if proxies:
+            session.proxies.update(proxies)
         
         try:
             session.get("https://lootlabs.gg/", timeout=10)
@@ -81,14 +85,19 @@ def solve_lootlabs_core(link: str):
             f"User-Agent: {headers['User-Agent']}"
         ]
         
-        ws = websocket.create_connection(
-            ws_url, 
-            timeout=10, 
-            header=ws_headers,
-            http_proxy_host=PROXY_HOST,
-            http_proxy_port=PROXY_PORT,
-            http_proxy_auth=(PROXY_USER, PROXY_PASS)
-        )
+        ws_kwargs = {
+            "timeout": 10,
+            "header": ws_headers
+        }
+        
+        if USE_PROXY:
+            ws_kwargs.update({
+                "http_proxy_host": PROXY_HOST,
+                "http_proxy_port": PROXY_PORT,
+                "http_proxy_auth": (PROXY_USER, PROXY_PASS)
+            })
+
+        ws = websocket.create_connection(ws_url, **ws_kwargs)
         
         try:
             botd_data = json.dumps({
@@ -124,5 +133,12 @@ def solve_lootlabs_core(link: str):
             except: pass
             return {"ok": False, "error": "LOOTLABS_WS_EXCEPTION", "message": str(inner_e), "elapsed": 0}
 
+    except (ProxyError, ConnectTimeout, Timeout) as pe:
+        return {
+            "ok": False,
+            "error": "PROXY_FAILED",
+            "message": f"代理连接失败，请检查代理IP或额度: {str(pe)}",
+            "elapsed": round(time.time() - start_t, 2)
+        }
     except Exception as e:
-        return {"ok": False, "error": "LOOTLABS_NETWORK_ERR", "message": str(e), "elapsed": 0}
+        return {"ok": False, "error": "LOOTLABS_NETWORK_ERR", "message": str(e), "elapsed": round(time.time() - start_t, 2)}

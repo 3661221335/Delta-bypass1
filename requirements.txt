@@ -2,3 +2,5 @@ fastapi
 uvicorn
 cloudscraper
 websocket-client
+cryptography
+brotli

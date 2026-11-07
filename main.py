@@ -311,7 +311,6 @@ def solve_delta(link):
         return r2
     return r
 
-
 def solve_lootlabs(link):
     start_t = time.time()
     try:
@@ -349,7 +348,6 @@ def solve_lootlabs(link):
     except Exception as e:
         return {"ok": False, "error": "LOOTLABS_EXCEPTION", "message": str(e), "elapsed": 0}
 
-
 app = FastAPI()
 
 @app.get("/health")
@@ -358,14 +356,14 @@ def health_check():
 
 @app.get("/delta")
 def delta(url: str = Query(...)):
-    if url in CACHE:
-        cached_data = CACHE[url]
-        if time.time() - cached_data["time"] < CACHE_TTL:
-            return {"key": cached_data["key"], "error": None, "elapsed": cached_data["elapsed"]}
-        else:
-            del CACHE[url]
-
     try:
+        if url in CACHE:
+            cached_data = CACHE[url]
+            if time.time() - cached_data["time"] < CACHE_TTL:
+                return {"key": cached_data["key"], "error": None, "elapsed": cached_data["elapsed"]}
+            else:
+                del CACHE[url]
+
         if "lootlabs" in url or "loot-link" in url:
             res = solve_lootlabs(url)
         else:
@@ -394,4 +392,4 @@ def delta(url: str = Query(...)):
         return {"key": None, "error": str(res.get("error", "unknown")), "elapsed": 0}
         
     except Exception as e:
-        return {"key": None, "error": "timeout", "elapsed": 0}
+        return {"key": None, "error": f"引擎捕获异常: {str(e)}", "elapsed": 0}

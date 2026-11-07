@@ -1,6 +1,6 @@
 fastapi
 uvicorn
-cloudscraper
+curl_cffi
 websocket-client
 cryptography
 brotli

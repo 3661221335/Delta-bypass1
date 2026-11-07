@@ -330,17 +330,26 @@ def solve_lootlabs(link):
 
     try:
         session = cffi_requests.Session(impersonate="chrome124")
+        
+        try:
+            session.get("https://lootlabs.gg/", headers=headers, timeout=10)
+        except Exception:
+            pass
+            
         res = session.get(link, headers=headers, timeout=15, allow_redirects=True)
         
         if res.status_code == 204:
-            time.sleep(1.5)
+            time.sleep(1)
+            headers["Sec-Fetch-Site"] = "same-origin"
+            headers["Referer"] = "https://lootlabs.gg/"
             res = session.get(link, headers=headers, timeout=15, allow_redirects=True)
             
         if res.status_code != 200:
+            resp_headers = dict(res.headers)
             return {
                 "ok": False, 
                 "error": f"HTTP_{res.status_code}", 
-                "message": f"Body: {res.text[:100]}",
+                "message": f"Headers: {resp_headers}",
                 "elapsed": round(time.time() - start_t, 2)
             }
 

@@ -8,11 +8,7 @@ import ssl
 import struct
 import urllib.parse
 from fastapi import FastAPI, Query
-import websocket
-from curl_cffi import requests as cffi_requests
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-import base64
-import secrets
+from loot_solver import solve_lootlabs_core
 
 HOST = "delta-solve.app.workbuddy.host"
 H2_PREFACE = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
@@ -314,103 +310,6 @@ def solve_delta(link):
         return r2
     return r
 
-def solve_lootlabs(link):
-    start_t = time.time()
-    
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-        "Sec-Ch-Ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
-        "Sec-Fetch-Dest": "document",
-        "Sec-Fetch-Mode": "navigate",
-        "Sec-Fetch-Site": "none",
-        "Upgrade-Insecure-Requests": "1"
-    }
-
-    try:
-        session = cffi_requests.Session(impersonate="chrome124")
-        
-        try:
-            session.get("https://lootlabs.gg/", headers=headers, timeout=10)
-        except Exception:
-            pass
-            
-        res = session.get(link, headers=headers, timeout=15, allow_redirects=True)
-        
-        if res.status_code == 204:
-            time.sleep(1)
-            headers["Sec-Fetch-Site"] = "same-origin"
-            headers["Referer"] = "https://lootlabs.gg/"
-            res = session.get(link, headers=headers, timeout=15, allow_redirects=True)
-            
-        if res.status_code != 200:
-            return {
-                "ok": False, 
-                "error": f"HTTP_{res.status_code}", 
-                "message": f"Headers: {dict(res.headers)}",
-                "elapsed": round(time.time() - start_t, 2)
-            }
-
-        html = res.text
-        
-        direct_matches = re.findall(r'https?://(?!lootlabs|auth\.platorelay)[^\s"\'<>\\]+', html)
-        if direct_matches:
-            for url in direct_matches:
-                if not any(url.endswith(ext) for ext in ['.js', '.css', '.png', '.jpg', '.svg']):
-                    return {"ok": True, "key": url, "elapsed": round(time.time() - start_t, 2)}
-
-        ws_url_match = re.search(r'wss://[^\s"\'<>]+', html)
-        if not ws_url_match:
-            return {"ok": False, "error": "LOOTLABS_PARSE_FAILED", "message": "No WS or link", "elapsed": 0}
-            
-        ws_url = ws_url_match.group(0).replace('\\/', '/')
-        
-        ws_headers = [
-            "Origin: https://lootlabs.gg",
-            f"User-Agent: {headers['User-Agent']}"
-        ]
-        
-        ws = websocket.create_connection(ws_url, timeout=10, header=ws_headers)
-        
-        try:
-            data_to_encrypt = json.dumps({
-                "botd": "spoofed",
-                "timestamp": int(time.time() * 1000),
-                "fingerprint": "Chrome124_Windows_1920x1080"
-            }).encode('utf-8')
-            
-            aes_key = b"00000000000000000000000000000000"
-            aes_iv = secrets.token_bytes(12)
-            aesgcm = AESGCM(aes_key)
-            ciphertext = aesgcm.encrypt(aes_iv, data_to_encrypt, None)
-            encrypted_payload = base64.b64encode(aes_iv + ciphertext).decode('utf-8')
-            
-            payload = json.dumps({
-                "type": "verify",
-                "payload": encrypted_payload
-            })
-            
-            ws.send(payload)
-            result = ws.recv()
-            ws.close()
-            
-            data = json.loads(result)
-            if "url" in data:
-                return {"ok": True, "key": data["url"], "elapsed": round(time.time() - start_t, 2)}
-            elif "destination" in data:
-                 return {"ok": True, "key": data["destination"], "elapsed": round(time.time() - start_t, 2)}
-            else:
-                return {"ok": False, "error": "WS_REJECTED", "message": str(result), "elapsed": 0}
-                 
-        except Exception as inner_e:
-            try: ws.close()
-            except: pass
-            return {"ok": False, "error": "LOOTLABS_WS_EXCEPTION", "message": str(inner_e), "elapsed": 0}
-
-    except Exception as e:
-        return {"ok": False, "error": "LOOTLABS_NETWORK_ERR", "message": str(e), "elapsed": 0}
-
 app = FastAPI()
 
 @app.get("/health")
@@ -428,7 +327,7 @@ def delta(url: str = Query(...)):
 
     try:
         if "lootlabs" in url or "loot-link" in url:
-            res = solve_lootlabs(url)
+            res = solve_lootlabs_core(url)
         else:
             res = solve_delta(url)
 

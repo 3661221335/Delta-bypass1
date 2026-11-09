@@ -28,27 +28,40 @@ def solve_with_bacon(link):
                     "--disable-blink-features=AutomationControlled", 
                     "--no-sandbox", 
                     "--disable-setuid-sandbox",
-                    "--disable-dev-shm-usage"
+                    "--disable-dev-shm-usage",
+                    "--disable-gpu",
+                    "--window-size=1920,1080"
                 ]
             )
             ctx = browser.new_context(
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-                viewport={"width": 1280, "height": 900},
+                viewport={"width": 1920, "height": 1080},
+                locale="en-US",
+                timezone_id="America/New_York"
             )
+            
             page = ctx.new_page()
             
+            page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+            
             if DELTA.search(link):
-                page.goto(f"{BASE}/delta?url={link}", wait_until="domcontentloaded")
-                page.wait_for_selector("#deltaUrl", timeout=30000)
+                page.goto(f"{BASE}/delta?url={link}", wait_until="domcontentloaded", timeout=60000)
+                page.wait_for_timeout(3000)
+                page.wait_for_selector("#deltaUrl", timeout=60000)
                 page.fill("#deltaUrl", link)
+                page.wait_for_selector("#deltaBypassBtn", timeout=60000)
                 page.click("#deltaBypassBtn")
             else:
-                page.goto(BASE, wait_until="domcontentloaded")
-                page.wait_for_selector("#urlInput", timeout=30000)
+                page.goto(BASE, wait_until="domcontentloaded", timeout=60000)
+                page.wait_for_timeout(3000)
+                page.wait_for_selector("#urlInput", timeout=60000)
                 page.fill("#urlInput", link)
+                page.wait_for_selector("#bypassBtn", timeout=60000)
                 page.click("#bypassBtn")
                 
             page.wait_for_selector("text=Bypass successful", timeout=120000)
+            page.wait_for_timeout(2000)
+            
             body = page.inner_text("body")
             vals = page.eval_on_selector_all("input,textarea", "els => els.map(e => e.value || '')")
             result = pick(body + "\n" + "\n".join(vals))
@@ -61,7 +74,11 @@ def solve_with_bacon(link):
                 return {"key": None, "error": "未能提取到有效结果", "elapsed": round(time.time() - start_t, 2)}
                 
     except Exception as e:
-        return {"key": None, "error": f"BROWSER_ERROR: {str(e)[:100]}", "elapsed": round(time.time() - start_t, 2)}
+        try:
+            title = page.title() if 'page' in locals() else "Unknown"
+        except:
+            title = "Error getting title"
+        return {"key": None, "error": f"BROWSER_ERROR: {str(e)[:80]} | 页面标题: {title}", "elapsed": round(time.time() - start_t, 2)}
 
 @app.get("/bypass")
 async def bypass_get(url: str = Query(...)):

@@ -8,6 +8,8 @@ import time
 import requests
 import asyncio
 from urllib.parse import unquote
+import os
+import uvicorn
 
 app = FastAPI()
 
@@ -90,6 +92,10 @@ def run_engine(url: str):
             "elapsed": round(time.time() - start_t, 2)
         }
 
+@app.get("/")
+def health_check():
+    return {"status": "ok", "engine": "running"}
+
 @app.get("/bypass")
 async def bypass_get(url: str = Query(...)):
     return await asyncio.to_thread(run_engine, url)
@@ -104,3 +110,7 @@ async def bypass_post(request: Request):
         return await asyncio.to_thread(run_engine, url)
     except Exception as e:
         return JSONResponse(status_code=400, content={"key": None, "error": str(e)})
+
+if __name__ == "__main__":
+    port = int(os.getenv("PORT", 3000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
